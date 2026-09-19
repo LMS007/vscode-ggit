@@ -1,9 +1,9 @@
 import { simpleGit, SimpleGit } from 'simple-git';
-import { BranchInfo, ChangedFile, CommitInfo, FileStatus, RemoteBranchInfo } from './types';
+import { BranchInfo, ChangedFile, CommitInfo, FileStatus, RefBadge, RemoteBranchInfo } from './types';
 
 const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const FIELD_SEP = '\x1f';
-const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%aI', '%s'].join(FIELD_SEP);
+const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(FIELD_SEP);
 
 export class GitService {
 	private readonly git: SimpleGit;
@@ -37,12 +37,12 @@ export class GitService {
 	}
 
 	async getLog(branchName: string): Promise<CommitInfo[]> {
-		const out = await this.git.raw(['log', branchName, `--pretty=format:${LOG_FORMAT}`, '--']);
+		const out = await this.git.raw(['log', branchName, `--pretty=format:${LOG_FORMAT}`, '--decorate=short', '--']);
 		if (!out.trim()) {
 			return [];
 		}
 		return out.split('\n').map(line => {
-			const [hash, parents, authorName, authorEmail, date, message] = line.split(FIELD_SEP);
+			const [hash, parents, authorName, authorEmail, date, message, refs] = line.split(FIELD_SEP);
 			return {
 				hash,
 				parentHashes: parents ? parents.split(' ').filter(Boolean) : [],
@@ -50,6 +50,7 @@ export class GitService {
 				authorEmail,
 				date,
 				message,
+				refs: parseRefs(refs ?? ''),
 			};
 		});
 	}
@@ -62,20 +63,25 @@ export class GitService {
 
 	async getCommitFiles(sha: string): Promise<ChangedFile[]> {
 		const base = await this.getDiffBase(sha);
-		const out = await this.git.raw(['diff', '--name-status', '-M', base, sha]);
-		if (!out.trim()) {
+		const [nameStatusOut, numstatOut] = await Promise.all([
+			this.git.raw(['diff', '--name-status', '-M', base, sha]),
+			this.git.raw(['diff', '--numstat', '-M', base, sha]),
+		]);
+		if (!nameStatusOut.trim()) {
 			return [];
 		}
-		return out
+		const stats = parseNumstat(numstatOut);
+		return nameStatusOut
 			.split('\n')
 			.filter(Boolean)
-			.map(line => {
+			.map((line, i) => {
 				const parts = line.split('\t');
 				const status = parts[0][0] as FileStatus;
+				const stat = stats[i];
 				if (status === 'R' || status === 'C') {
-					return { status, oldPath: parts[1], path: parts[2] };
+					return { status, oldPath: parts[1], path: parts[2], ...stat };
 				}
-				return { status, path: parts[1] };
+				return { status, path: parts[1], ...stat };
 			});
 	}
 
@@ -95,4 +101,38 @@ export class GitService {
 		}
 		await this.git.pull(remote, current);
 	}
+}
+
+/** Parses `%D` ref-decoration output, e.g. "HEAD -> main, origin/main, origin/HEAD, tag: v1.0". */
+function parseRefs(raw: string): RefBadge[] {
+	if (!raw) {
+		return [];
+	}
+	return raw
+		.split(', ')
+		.flatMap(part => part.split(' -> '))
+		.map(name => name.trim())
+		.filter(Boolean)
+		.map(name => {
+			if (name.startsWith('tag: ')) {
+				return { name: name.slice('tag: '.length), kind: 'tag' as const };
+			}
+			return { name, kind: name.includes('/') ? ('remote' as const) : ('local' as const) };
+		});
+}
+
+type NumstatEntry = Pick<ChangedFile, 'insertions' | 'deletions' | 'binary'>;
+
+/** Parses `git diff --numstat` output. Relies on line order matching a `--name-status` diff run with identical arguments. */
+function parseNumstat(out: string): NumstatEntry[] {
+	return out
+		.split('\n')
+		.filter(Boolean)
+		.map(line => {
+			const [added, deleted] = line.split('\t');
+			if (added === '-' || deleted === '-') {
+				return { binary: true };
+			}
+			return { insertions: Number(added), deletions: Number(deleted) };
+		});
 }

@@ -6,7 +6,7 @@ export const GGIT_SHOW_SCHEME = 'ggit-show';
 /** Sentinel ref meaning "this side of the diff doesn't exist" (added/deleted file). */
 export const EMPTY_REF = '__ggit_empty__';
 
-export function toGgitShowUri(relPath: string, ref: string): vscode.Uri {
+export function toGGitShowUri(relPath: string, ref: string): vscode.Uri {
 	const normalized = relPath.startsWith('/') ? relPath : `/${relPath}`;
 	return vscode.Uri.from({
 		scheme: GGIT_SHOW_SCHEME,
@@ -15,7 +15,7 @@ export function toGgitShowUri(relPath: string, ref: string): vscode.Uri {
 	});
 }
 
-export class GgitShowContentProvider implements vscode.TextDocumentContentProvider {
+export class GGitShowContentProvider implements vscode.TextDocumentContentProvider {
 	private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri>();
 	readonly onDidChange = this._onDidChange.event;
 

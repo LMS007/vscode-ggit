@@ -1,6 +1,6 @@
 {
   "name": "vscode-ggit",
-  "displayName": "Ggit",
+  "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
   "version": "0.0.1",
   "engines": {
@@ -19,7 +19,7 @@
       "activitybar": [
         {
           "id": "ggit",
-          "title": "Ggit",
+          "title": "GGit",
           "icon": "media/icon.svg"
         }
       ]
@@ -39,21 +39,21 @@
     "commands": [
       {
         "command": "ggit.openBranchHistory",
-        "title": "Ggit: Open Branch History"
+        "title": "GGit: Open Branch History"
       },
       {
         "command": "ggit.fetch",
-        "title": "Ggit: Fetch",
+        "title": "GGit: Fetch",
         "icon": "$(cloud-download)"
       },
       {
         "command": "ggit.pull",
-        "title": "Ggit: Pull",
+        "title": "GGit: Pull",
         "icon": "$(arrow-down)"
       },
       {
         "command": "ggit.refresh",
-        "title": "Ggit: Refresh",
+        "title": "GGit: Refresh",
         "icon": "$(refresh)"
       }
     ],

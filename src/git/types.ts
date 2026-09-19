@@ -7,6 +7,13 @@ export interface RemoteBranchInfo {
 	name: string;
 }
 
+export type RefKind = 'local' | 'remote' | 'tag';
+
+export interface RefBadge {
+	name: string;
+	kind: RefKind;
+}
+
 export interface CommitInfo {
 	hash: string;
 	parentHashes: string[];
@@ -14,6 +21,7 @@ export interface CommitInfo {
 	authorEmail: string;
 	date: string;
 	message: string;
+	refs: RefBadge[];
 }
 
 export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T';
@@ -22,4 +30,7 @@ export interface ChangedFile {
 	path: string;
 	oldPath?: string;
 	status: FileStatus;
+	insertions?: number;
+	deletions?: number;
+	binary?: boolean;
 }

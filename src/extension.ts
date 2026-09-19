@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { BranchHistoryPanel } from './history/branchHistoryPanel';
-import { GgitShowContentProvider, GGIT_SHOW_SCHEME } from './diff/showContentProvider';
+import { GGitShowContentProvider, GGIT_SHOW_SCHEME } from './diff/showContentProvider';
 import { GitService } from './git/gitService';
 import { BranchesTreeProvider } from './tree/branchesTreeProvider';
 import { RemotesTreeProvider } from './tree/remotesTreeProvider';
@@ -8,13 +8,13 @@ import { RemotesTreeProvider } from './tree/remotesTreeProvider';
 export function activate(context: vscode.ExtensionContext): void {
 	const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 	if (!workspaceFolder) {
-		console.log('Ggit: no workspace folder open, nothing to activate.');
+		console.log('GGit: no workspace folder open, nothing to activate.');
 		return;
 	}
 
 	const gitService = new GitService(workspaceFolder.uri.fsPath);
 
-	const branchesProvider = new BranchesTreeProvider(gitService);
+	const branchesProvider = new BranchesTreeProvider(gitService, context.extensionUri);
 	const remotesProvider = new RemotesTreeProvider(gitService);
 
 	const refreshAll = () => {
@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.window.createTreeView('ggitBranches', { treeDataProvider: branchesProvider }),
 		vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider }),
-		vscode.workspace.registerTextDocumentContentProvider(GGIT_SHOW_SCHEME, new GgitShowContentProvider(gitService)),
+		vscode.workspace.registerTextDocumentContentProvider(GGIT_SHOW_SCHEME, new GGitShowContentProvider(gitService)),
 
 		vscode.commands.registerCommand('ggit.openBranchHistory', (branchName: string) => {
 			BranchHistoryPanel.createOrShow(context, gitService, branchName);
@@ -69,7 +69,7 @@ async function runGitOperation(title: string, op: () => Promise<void>, onSuccess
 		onSuccess();
 		BranchHistoryPanel.refreshIfOpen();
 	} catch (err) {
-		vscode.window.showErrorMessage(`Ggit: ${(err as Error).message}`);
+		vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
 	}
 }
 

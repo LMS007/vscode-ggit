@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { openDiffForFile } from '../diff/openDiff';
+import { openDiffForCommit } from '../diff/openDiff';
 import { GitService } from '../git/gitService';
 import { HostMessage, WebviewMessage } from './protocol';
 
@@ -76,7 +76,7 @@ export class BranchHistoryPanel {
 				break;
 			case 'openDiff':
 				try {
-					await openDiffForFile(this.gitService, msg.sha, msg.file);
+					await openDiffForCommit(this.gitService, msg.sha, msg.files);
 				} catch (err) {
 					vscode.window.showErrorMessage(`Failed to open diff: ${(err as Error).message}`);
 				}
@@ -126,11 +126,22 @@ export class BranchHistoryPanel {
 			height: 100%;
 			box-sizing: border-box;
 			padding: 4px 0;
+			min-width: 120px;
 		}
-		#commits { flex: 1 1 60%; border-right: 1px solid var(--vscode-panel-border); }
-		#files { flex: 1 1 40%; }
+		#commits { flex: 0 0 60%; }
+		#files { flex: 1 1 auto; }
+		#splitter {
+			flex: 0 0 4px;
+			cursor: col-resize;
+			background-color: var(--vscode-panel-border);
+		}
+		#splitter:hover, #splitter.dragging {
+			background-color: var(--vscode-focusBorder);
+		}
 		.row {
-			padding: 4px 10px;
+			padding: 6px 10px;
+			margin: 2px 8px;
+			border-radius: 6px;
 			cursor: pointer;
 			white-space: nowrap;
 			overflow: hidden;
@@ -138,18 +149,132 @@ export class BranchHistoryPanel {
 		}
 		.row:hover { background-color: var(--vscode-list-hoverBackground); }
 		.row.selected {
-			background-color: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background-color: var(--vscode-badge-background, #3b82f6);
+			color: var(--vscode-badge-foreground, #ffffff);
+		}
+		.row.selected .commit-author,
+		.row.selected .commit-date,
+		.row.selected .commit-hash,
+		.row.selected .commit-title {
+			color: var(--vscode-badge-foreground, #ffffff);
+		}
+		.commit-row-wrapper {
+			display: flex;
+			align-items: stretch;
+		}
+		.commit-graph {
+			flex: 0 0 24px;
+			position: relative;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+		.commit-graph-line {
+			position: absolute;
+			top: 0;
+			bottom: 0;
+			left: 50%;
+			width: 2px;
+			transform: translateX(-50%);
+			background-color: var(--vscode-charts-blue, #3b82f6);
+			opacity: 0.6;
+		}
+		.commit-row-wrapper:first-child .commit-graph-line { top: 50%; }
+		.commit-row-wrapper:last-child .commit-graph-line { bottom: 50%; }
+		.commit-graph-dot {
+			position: relative;
+			width: 10px;
+			height: 10px;
+			border-radius: 50%;
+			background-color: var(--vscode-editor-background, #1e1e1e);
+			border: 2px solid var(--vscode-charts-blue, #3b82f6);
+			z-index: 1;
+		}
+		.commit-row {
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+			flex: 1 1 auto;
+			min-width: 0;
+			width: 100%;
+		}
+		.commit-row::after {
+			content: '';
+			display: block;
+			height: 1px;
+			margin-top: 6px;
+			margin-left: -10px;
+			margin-right: -10px;
+			margin-bottom: -6px;
+			background-color: var(--vscode-panel-border);
+			opacity: 0.6;
+		}
+		.commit-line1 {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+		}
+		.commit-author {
+			font-weight: normal;
+			color: var(--vscode-foreground);
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			flex: 1 1 auto;
+			min-width: 30px;
+		}
+		.commit-refs {
+			display: flex;
+			gap: 4px;
+			flex: 0 1 auto;
+			overflow: hidden;
+		}
+		.commit-date {
+			flex: 0 0 auto;
+			margin-left: auto;
+			color: var(--vscode-descriptionForeground);
+			font-size: 0.85em;
+			padding-left: 6px;
+		}
+		.commit-line2 {
+			display: flex;
+			align-items: baseline;
+			gap: 6px;
+			overflow: hidden;
 		}
 		.commit-hash {
 			color: var(--vscode-descriptionForeground);
-			margin-right: 6px;
 			font-family: var(--vscode-editor-font-family, monospace);
+			flex: 0 0 auto;
 		}
-		.commit-meta {
-			color: var(--vscode-descriptionForeground);
-			font-size: 0.9em;
-			margin-top: 2px;
+		.commit-title {
+			font-weight: 600;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.ref-badge {
+			display: inline-block;
+			padding: 0 5px;
+			border-radius: 3px;
+			font-size: 0.75em;
+			font-weight: 600;
+			line-height: 1.6;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+		.ref-badge-local {
+			background-color: var(--vscode-badge-background, #3b82f6);
+			color: var(--vscode-badge-foreground, #fff);
+		}
+		.ref-badge-remote {
+			background-color: var(--vscode-descriptionForeground, #8a8a8a);
+			color: var(--vscode-editor-background, #1e1e1e);
+		}
+		.ref-badge-tag {
+			background-color: var(--vscode-gitDecoration-addedResourceForeground, #4b4);
+			color: var(--vscode-editor-background, #1e1e1e);
 		}
 		.file-status {
 			display: inline-block;
@@ -161,6 +286,26 @@ export class BranchHistoryPanel {
 		.status-M { color: var(--vscode-gitDecoration-modifiedResourceForeground, #d80); }
 		.status-D { color: var(--vscode-gitDecoration-deletedResourceForeground, #d44); }
 		.status-R, .status-C { color: var(--vscode-gitDecoration-renamedResourceForeground, #48d); }
+		.file-row {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+		}
+		.file-name {
+			flex: 1 1 auto;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.file-stats {
+			flex: 0 0 auto;
+			font-family: var(--vscode-editor-font-family, monospace);
+			font-size: 0.9em;
+			white-space: nowrap;
+		}
+		.stat-add { color: var(--vscode-gitDecoration-addedResourceForeground, #4b4); }
+		.stat-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #d44); margin-left: 4px; }
+		.stat-binary { color: var(--vscode-descriptionForeground); font-style: italic; }
 		.empty {
 			padding: 10px;
 			color: var(--vscode-descriptionForeground);
@@ -171,6 +316,7 @@ export class BranchHistoryPanel {
 <body>
 	<div id="layout">
 		<div id="commits" class="pane"><div class="empty">Loading commits…</div></div>
+		<div id="splitter"></div>
 		<div id="files" class="pane"><div class="empty">Select a commit to see its changed files.</div></div>
 	</div>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
