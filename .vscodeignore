@@ -2,11 +2,14 @@
 .vscode-test/**
 out/**
 node_modules/**
+!node_modules/@vscode/codicons/dist/**
+node_modules/@vscode/codicons/dist/codiconsLibrary.ts
 src/**
 .gitignore
 .yarnrc
 esbuild.js
 vsc-extension-quickstart.md
+icon-preview2.html
 **/tsconfig.json
 **/eslint.config.mjs
 **/*.map

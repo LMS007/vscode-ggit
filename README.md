@@ -1,71 +1,107 @@
-# vscode-ggit README
+# GGit
 
-This is the README for your extension "vscode-ggit". After writing up a brief description, we recommend including the following sections.
+A minimal, Tower-style git UI for VS Code — a custom sidebar (Working Copy, Branches, Remotes,
+Stashes) plus a dedicated branch-history panel, built as a personal alternative to the built-in
+Source Control view.
+
+This is a personal project, not published to the Marketplace. It's installed locally from a
+`.vsix` file — see **Installing** below.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+**Working Copy**
+- Flat staged/unstaged file list; the checkbox stages/unstages a file directly
+- Stage All / Unstage All / Save Stash / Apply Stash / Commit, all from the section's toolbar
+- Discard Local Changes — deletes new files, restores deleted ones, reverts modified ones, with
+  confirmation wording tailored to what's actually about to happen
+- Multi-select right-click to stash or discard several files at once
+- Click a file to open a left/right diff; hover for a one-click "Open File" action
+- Auto-refreshes on file save/delete, not just on git operations
 
-For example if there is an image subfolder under your extension project workspace:
+**Commit panel**
+- A full panel (not a popup) for composing a commit: summary, an optional longer description, and
+  an Amend checkbox that pre-fills the last commit's message
+- Shows the branch you're committing to
+- The file list here also has checkboxes — stage or unstage without leaving the panel — plus a
+  check-all/uncheck-all shortcut and a live "+N -N" line summarizing what's staged
+- The Commit button is disabled until there's a summary and something staged (Amend excepted)
 
-\!\[feature X\]\(images/feature-x.png\)
+**Branches**
+- Branches with `/` in their name are grouped into folders (e.g. `alice/feature-x`); the
+  folder holding your current branch is highlighted and expands automatically
+- Ahead/behind counts shown as `↑N`/`↓N`
+- Right-click: Create New Branch from Here, Rename, Copy Branch Name, Delete (greyed out for the
+  checked-out branch; escalates to a force-delete confirmation only if git refuses a safe delete)
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+**Remotes** — browse and check out remote branches (also grouped into folders).
+
+**Stashes** — list, apply, and delete (multi-select bulk delete, oldest-first to avoid reflog
+index shifts); correctly shows files from `--include-untracked` stashes.
+
+**Conflicts** — appears automatically above Working Copy while a rebase is in progress. Lists
+conflicted files; click one to open it (VS Code's built-in inline merge-conflict resolution just
+works on a plain file open); check it off once resolved to mark it staged. Continue / Skip / Abort
+buttons live in this section's toolbar.
+
+**Rebase** — pick a branch to rebase the current one onto (local branches only); `--autostash` is
+always on, so a dirty working tree never blocks starting a rebase.
+
+**History panel** — per-branch commit log (commits only reachable via the branch's upstream are
+shown dimmed, not hidden), a resizable file-list pane, and a custom toolbar (Create Branch, Fetch,
+Pull, Push, Sync, Refresh, Rebase, Apply/Save Stash, Commit). Right-click a commit for Reset
+Branch to Here (Mixed/Hard), Cherry-Pick, or Save Patch. Selection stays on the same commit across
+a branch switch when possible.
+
+**Activity bar badge** — shows the number of changed files in Working Copy, kept live via
+`onStartupFinished` activation (not just when you first open the sidebar).
 
 ## Requirements
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+- `git` installed and available on your `PATH`.
+- A single-root VS Code workspace whose root is (or is inside) a git repository. Multi-root
+  workspaces aren't supported — GGit only looks at the first workspace folder.
 
-## Extension Settings
+## Known limitations / not implemented yet
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+- **No git worktrees** — no UI for creating, listing, or switching between `git worktree`s.
+- **Only one History tab** — opening a different branch's history reuses the same tab rather than
+  letting you keep several branches' histories open side by side.
+- **No interactive rebase** — rebasing is always the plain, non-interactive kind; no
+  reorder/squash/reword/drop UI.
+- **No plain merge** — only rebase is wired up; there's no "Merge branch into current" action, and
+  the Conflicts section only appears for a rebase in progress (not a merge).
+- **No tags** — no view or actions for creating, listing, or pushing tags.
+- **No credential/SSH management** — fetch/pull/push rely entirely on whatever git credential
+  setup already works from your terminal.
+- The Commit-launcher sidebar section (a big button above Working Copy) is implemented but
+  currently disabled pending a better design — see `src/commit/commitLauncherView.ts` and the
+  `ggitCommitLauncher` view's `"when": "false"` in `package.json` if picking it back up.
 
-For example:
+## Installing
 
-This extension contributes the following settings:
+GGit isn't published — build and install it from source as a `.vsix`:
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+```sh
+npm install
+npx vsce package
+```
 
-## Known Issues
+This produces `vscode-ggit-<version>.vsix` in the project root. Install it either from the
+command line:
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+```sh
+code --install-extension vscode-ggit-<version>.vsix
+```
 
-## Release Notes
+or from within VS Code: open the Extensions view, click the `...` menu in its top-right corner,
+choose **Install from VSIX...**, and pick the file.
 
-Users appreciate release notes as you update your extension.
+Reinstalling after a change just means repeating both steps — VS Code replaces the previous
+version in place.
 
-### 1.0.0
+## Development
 
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+- `npm run watch` — runs the type checker and esbuild in watch mode.
+- Press `F5` in VS Code to launch an Extension Development Host with GGit loaded from source
+  (no packaging needed for day-to-day iteration).
+- `npm run check-types` / `npm run lint` — the same checks CI-equivalent steps run before packaging.
