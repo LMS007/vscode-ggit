@@ -24,11 +24,13 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 	getTreeItem(node: BranchTreeNode<RemoteBranchInfo>): vscode.TreeItem {
 		if (node.kind === 'folder') {
 			const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.Collapsed);
+			item.id = node.id;
 			item.iconPath = new vscode.ThemeIcon('folder');
 			item.contextValue = 'remoteBranchFolder';
 			return item;
 		}
 		const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.None);
+		item.id = node.id;
 		item.iconPath = new vscode.ThemeIcon('cloud');
 		item.contextValue = 'remoteBranch';
 		item.command = {

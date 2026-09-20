@@ -31,7 +31,7 @@ export interface CommitInfo {
 	onBranch: boolean;
 }
 
-export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | '?';
+export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | '?' | 'U';
 
 export interface ChangedFile {
 	path: string;
@@ -51,6 +51,12 @@ export interface WorkingChangeFile {
 	path: string;
 	status: FileStatus;
 	state: WorkingChangeState;
+}
+
+/** A path git has flagged as having an unresolved merge conflict — mid-rebase, mid-merge, etc. Kept
+ * separate from WorkingChangeFile since "staged vs. unstaged" doesn't apply until it's resolved. */
+export interface ConflictedFile {
+	path: string;
 }
 
 export interface StashInfo {

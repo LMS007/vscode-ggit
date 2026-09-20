@@ -228,8 +228,26 @@ function joinWithAnd(parts: string[]): string {
 	return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
-export function rebaseCurrentBranch(): void {
-	void vscode.window.showInformationMessage('Ggit: Rebase isn’t implemented yet.');
+/** Whichever branch is currently checked out gets rebased; the branch picked here is what it's rebased
+ * onto. Only local branches are offered — mirrors Create Branch's Starting Point picker — since
+ * rebasing onto a remote branch you haven't fetched yet would just replay onto stale history anyway
+ * (run Fetch/Pull first for that). `--autostash` is always on (see GitService.rebaseOnto), so there's
+ * no "you have local changes" failure mode to expose a checkbox for, and interactive rebase
+ * (reordering/squashing/rewording commits) is a big enough feature on its own that it's deliberately
+ * left out of this first pass — this only ever does a plain, non-interactive rebase. */
+export async function rebaseCurrentBranchWithPicker(gitService: GitService): Promise<void> {
+	const current = await gitService.getCurrentBranch();
+	requireCurrentBranch(current);
+
+	const branches = await gitService.listLocalBranches();
+	const picked = await vscode.window.showQuickPick(
+		branches.filter(b => b.name !== current).map(b => b.name),
+		{ placeHolder: `Rebase "${current}" onto…`, ignoreFocusOut: true }
+	);
+	if (!picked) {
+		return;
+	}
+	await gitService.rebaseOnto(picked);
 }
 
 export async function applyStashWithPicker(gitService: GitService): Promise<void> {

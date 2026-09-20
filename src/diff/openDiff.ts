@@ -51,12 +51,20 @@ export async function openDiffForWorkingChange(gitService: GitService, file: Wor
 /** VS Code's "preview tab" reuse doesn't reliably replace one diff editor with another, so we manage
  * that ourselves — but close the old tab only *after* the new one is open, so the group it lives in
  * never goes empty. Closing first (then reopening "beside") tears the group down and recreates it,
- * which is what caused the History panel to visibly flicker/reflow. */
+ * which is what caused the History panel to visibly flicker/reflow.
+ *
+ * The target column always comes from `preferredColumn`, never from wherever a leftover diff tab
+ * happens to already be sitting — reusing `existing`'s column here was the bug behind diffs
+ * occasionally opening in the same column as the History panel instead of beside it: closing the
+ * History tab while a diff tab was still open elsewhere collapses/renumbers editor groups (VS Code
+ * removes an emptied group and shifts the rest over), so that stale tab's column could silently
+ * become the *same* column History reopens into later. `existing` is only used for cleanup (closing
+ * the stale tab afterward), never for placement. */
 async function showDiff(leftUri: vscode.Uri, rightUri: vscode.Uri, title: string, preferredColumn: vscode.ViewColumn): Promise<void> {
 	const existing = findExistingGGitDiffTab();
 
 	await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title, {
-		viewColumn: existing?.group.viewColumn ?? preferredColumn,
+		viewColumn: preferredColumn,
 		preview: true,
 		// Keep focus in the History webview so its arrow-key file navigation keeps working —
 		// without this, opening the diff steals focus and the next keypress goes to the editor.

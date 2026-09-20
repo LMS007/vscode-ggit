@@ -1,6 +1,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CreateBranchPanel } from './branch/createBranchPanel';
+import { CommitLauncherViewProvider } from './commit/commitLauncherView';
+import { CommitPanel } from './commit/commitPanel';
 import { BranchHistoryPanel } from './history/branchHistoryPanel';
 import { CommitFilesPanel } from './history/commitFilesPanel';
 import { openDiffForWorkingChange } from './diff/openDiff';
@@ -12,17 +14,18 @@ import {
 	fetchWithPicker,
 	pullWithPicker,
 	pushCurrentBranch,
-	rebaseCurrentBranch,
+	rebaseCurrentBranchWithPicker,
 	renameLocalBranch,
 	stashAllWithMessage,
 	stashPathsWithMessage,
 	syncCurrentBranch,
 } from './git/gitActions';
 import { GitService } from './git/gitService';
-import { BranchInfo, StashInfo, WorkingChangeFile } from './git/types';
+import { BranchInfo, ConflictedFile, StashInfo, WorkingChangeFile } from './git/types';
 import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
 import { BranchesTreeProvider } from './tree/branchesTreeProvider';
+import { ConflictsTreeProvider } from './tree/conflictsTreeProvider';
 import { RemotesTreeProvider } from './tree/remotesTreeProvider';
 import { StashesTreeProvider } from './tree/stashesTreeProvider';
 import { WorkingChangeDecorationProvider } from './tree/workingChangeDecoration';
@@ -35,12 +38,22 @@ export function activate(context: vscode.ExtensionContext): void {
 		return;
 	}
 
-	const gitService = new GitService(workspaceFolder.uri.fsPath);
+	// View > Output > "GGit" — mainly for diagnosing the odd git-command failures that only show up
+	// against real, large, long-lived repos (e.g. branches whose upstream is in some inconsistent
+	// state) rather than the clean throwaway repos used to test this stuff in isolation.
+	const output = vscode.window.createOutputChannel('GGit');
+	context.subscriptions.push(output);
+
+	const gitService = new GitService(workspaceFolder.uri.fsPath, message => output.appendLine(message));
 
 	const branchesProvider = new BranchesTreeProvider(gitService, context.extensionUri);
 	const remotesProvider = new RemotesTreeProvider(gitService);
 	const workingCopyProvider = new WorkingCopyTreeProvider(gitService);
 	const stashesProvider = new StashesTreeProvider(gitService);
+	const conflictsProvider = new ConflictsTreeProvider(gitService);
+	const commitLauncherProvider = new CommitLauncherViewProvider(gitService, () =>
+		vscode.commands.executeCommand('ggit.commit')
+	);
 
 	const activeBranchDecorations = new ActiveBranchDecorationProvider(gitService);
 	const workingChangeDecorations = new WorkingChangeDecorationProvider();
@@ -59,14 +72,37 @@ export function activate(context: vscode.ExtensionContext): void {
 			files.length > 0 ? { value: files.length, tooltip: `${files.length} changed file${files.length === 1 ? '' : 's'}` } : undefined;
 	};
 
+	// There's no public API to change the "GGit" text at the very top of the container itself — that
+	// comes from the static viewsContainers title in package.json and can't be set at runtime. The
+	// Working Copy view's own header is the closest thing to it (it's the topmost row, directly below
+	// "GGit"), and TreeView.description is explicitly documented as safe to update dynamically, so the
+	// active branch goes there instead.
+	const updateActiveBranchLabel = async () => {
+		const current = await gitService.getCurrentBranch();
+		workingCopyView.description = current ?? undefined;
+	};
+
+	// The Conflicts view only shows at all while a rebase is in progress (see its `when` clause in
+	// package.json) — this is what flips that on/off, checked on every refresh so entering/leaving a
+	// conflicted rebase state (via GGit's own actions or the integrated terminal) is picked up promptly.
+	const updateRebaseContext = async () => {
+		const inProgress = await gitService.isRebaseInProgress();
+		void vscode.commands.executeCommand('setContext', 'ggit.rebaseInProgress', inProgress);
+	};
+
 	const refreshAll = () => {
 		branchesProvider.refresh();
 		remotesProvider.refresh();
 		workingCopyProvider.refresh();
 		stashesProvider.refresh();
+		conflictsProvider.refresh();
 		activeBranchDecorations.refresh();
 		workingChangeDecorations.refresh();
 		void updateWorkingCopyBadge();
+		void updateRebaseContext();
+		void updateActiveBranchLabel();
+		CommitPanel.refreshIfOpen();
+		void commitLauncherProvider.refresh();
 	};
 
 	const isLocalBranchDoubleClick = createDoubleClickGuard();
@@ -87,11 +123,15 @@ export function activate(context: vscode.ExtensionContext): void {
 		refreshAll();
 	});
 	void updateWorkingCopyBadge();
+	void updateRebaseContext();
+	void updateActiveBranchLabel();
 
 	context.subscriptions.push(
 		workingCopyView,
 		vscode.window.createTreeView('ggitBranches', { treeDataProvider: branchesProvider }),
 		vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider }),
+		vscode.window.createTreeView('ggitConflicts', { treeDataProvider: conflictsProvider, canSelectMany: true }),
+		vscode.window.registerWebviewViewProvider('ggitCommitLauncher', commitLauncherProvider),
 		// Multi-select is for bulk delete only — Apply always acts on just the row you right-clicked,
 		// ignoring the rest of the selection (see ggit.applyStashItem below).
 		vscode.window.createTreeView('ggitStashes', { treeDataProvider: stashesProvider, canSelectMany: true }),
@@ -144,7 +184,48 @@ export function activate(context: vscode.ExtensionContext): void {
 			runGitOperation('Syncing…', () => syncCurrentBranch(gitService), refreshAll)
 		),
 
-		vscode.commands.registerCommand('ggit.rebase', () => rebaseCurrentBranch()),
+		vscode.commands.registerCommand('ggit.rebase', () =>
+			runGitOperation('Rebasing…', () => rebaseCurrentBranchWithPicker(gitService), refreshAll)
+		),
+
+		vscode.commands.registerCommand('ggit.rebaseContinue', () =>
+			runGitOperation('Continuing rebase…', () => gitService.rebaseContinue(), refreshAll)
+		),
+
+		vscode.commands.registerCommand('ggit.rebaseSkip', () =>
+			runGitOperation('Skipping commit…', () => gitService.rebaseSkip(), refreshAll)
+		),
+
+		vscode.commands.registerCommand('ggit.rebaseAbort', async () => {
+			const confirmed = await vscode.window.showWarningMessage(
+				'Abort the rebase in progress? This restores the branch to its state before the rebase started.',
+				{ modal: true },
+				'Abort Rebase'
+			);
+			if (confirmed !== 'Abort Rebase') {
+				return;
+			}
+			return runGitOperation('Aborting rebase…', () => gitService.rebaseAbort(), refreshAll);
+		}),
+
+		// Once a conflicted file's markers are resolved by hand, it still needs to be staged before
+		// `rebase --continue` will treat it as done — this is that, applied to the whole selection when
+		// one was right-clicked (same convention as ggit.discardChanges / ggit.stashSelectedFiles).
+		vscode.commands.registerCommand(
+			'ggit.markConflictResolved',
+			(file: ConflictedFile, selectedFiles?: ConflictedFile[]) => {
+				const files = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
+				return runGitOperation(
+					`Marking ${files.length} file${files.length === 1 ? '' : 's'} as resolved…`,
+					async () => {
+						for (const f of files) {
+							await gitService.stageFile(f.path);
+						}
+					},
+					refreshAll
+				);
+			}
+		),
 
 		vscode.commands.registerCommand('ggit.openWorkingChangeDiff', async (file: WorkingChangeFile) => {
 			try {
@@ -161,6 +242,10 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('ggit.unstageAll', () =>
 			runGitOperation('Unstaging all changes…', () => gitService.unstageAll(), refreshAll)
 		),
+
+		vscode.commands.registerCommand('ggit.commit', () => {
+			CommitPanel.createOrShow(context, gitService, refreshAll);
+		}),
 
 		vscode.commands.registerCommand('ggit.stashAll', () =>
 			runGitOperation('Stashing all changes…', () => stashAllWithMessage(gitService), refreshAll)
@@ -286,7 +371,14 @@ export function activate(context: vscode.ExtensionContext): void {
 	// Keep the trees (and any open history tab) in sync with out-of-band changes, e.g. a branch checkout
 	// or fetch run from the integrated terminal.
 	const gitDirWatcher = vscode.workspace.createFileSystemWatcher(
-		new vscode.RelativePattern(vscode.Uri.joinPath(workspaceFolder.uri, '.git'), '{HEAD,refs/**,packed-refs,index}')
+		new vscode.RelativePattern(
+			vscode.Uri.joinPath(workspaceFolder.uri, '.git'),
+			// rebase-merge/rebase-apply are the directories git creates for the duration of an
+			// in-progress rebase (conflicted or not) — watching them is what lets the Conflicts view
+			// and its `ggit.rebaseInProgress` context key react promptly to a rebase starting, pausing
+			// on a conflict, or finishing/aborting, including one driven from the integrated terminal.
+			'{HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**}'
+		)
 	);
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 	const onGitDirChange = () => {

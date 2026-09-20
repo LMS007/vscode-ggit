@@ -26,8 +26,16 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 
 	getTreeItem(node: BranchTreeNode<BranchInfo>): vscode.TreeItem {
 		if (node.kind === 'folder') {
-			const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.Collapsed);
-			item.iconPath = containsActiveBranch(node)
+			const isActiveBranchFolder = containsActiveBranch(node);
+			// A stable id (see branchTree.ts) is what lets this Expanded/Collapsed choice act as just
+			// the *default* — once VS Code has seen this id, it remembers whatever the user actually
+			// toggled it to across later refreshes instead of resetting it back to this every time.
+			const item = new vscode.TreeItem(
+				node.name,
+				isActiveBranchFolder ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed
+			);
+			item.id = node.id;
+			item.iconPath = isActiveBranchFolder
 				? {
 						light: vscode.Uri.joinPath(this.extensionUri, 'media', 'folder-green-light.svg'),
 						dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'folder-green-dark.svg'),
@@ -38,6 +46,7 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 		}
 		const branch = node.item;
 		const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.None);
+		item.id = node.id;
 		// A custom SVG (rather than ThemeIcon + ThemeColor) keeps this icon green even when
 		// the row is selected — VS Code recolors ThemeIcon colors to match selection state,
 		// but leaves custom icon images alone.

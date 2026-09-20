@@ -1,5 +1,17 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
-import { BranchInfo, ChangedFile, CommitInfo, FileStatus, RefBadge, RemoteBranchInfo, StashInfo, WorkingChangeFile } from './types';
+import {
+	BranchInfo,
+	ChangedFile,
+	CommitInfo,
+	ConflictedFile,
+	FileStatus,
+	RefBadge,
+	RemoteBranchInfo,
+	StashInfo,
+	WorkingChangeFile,
+} from './types';
 
 const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const FIELD_SEP = '\x1f';
@@ -8,13 +20,36 @@ const STASH_FORMAT = ['%gd', '%H', '%s', '%aI'].join(FIELD_SEP);
 
 export class GitService {
 	private readonly git: SimpleGit;
+	private gitDirPath?: string;
 
-	constructor(readonly repoRoot: string) {
-		this.git = simpleGit({ baseDir: repoRoot });
+	constructor(readonly repoRoot: string, private readonly logger?: (message: string) => void) {
+		// simple-git blocks `-c core.editor=...` by default as a potential command-injection vector —
+		// reasonable when that value could come from user input, but ours is always the hardcoded
+		// literal "true" (see rebaseOnto/rebaseContinue/rebaseSkip below), never anything external.
+		this.git = simpleGit({ baseDir: repoRoot, unsafe: { allowUnsafeEditor: true } });
 	}
 
 	async isGitRepository(): Promise<boolean> {
 		return this.git.checkIsRepo();
+	}
+
+	/** Resolved via git itself (not a hardcoded ".git" join) so this also works for worktrees, where
+	 * .git is a file pointing elsewhere rather than the directory itself. */
+	private async getGitDir(): Promise<string> {
+		if (!this.gitDirPath) {
+			const raw = (await this.git.raw(['rev-parse', '--git-dir'])).trim();
+			this.gitDirPath = path.isAbsolute(raw) ? raw : path.join(this.repoRoot, raw);
+		}
+		return this.gitDirPath;
+	}
+
+	/** git leaves a rebase-merge directory (or, for the legacy apply-based backend, rebase-apply) under
+	 * .git for the entire span of an in-progress rebase — conflicted or not — until --continue finishes
+	 * it or --abort/--skip clears it. That's the same thing plain `git status` checks to print "you are
+	 * currently rebasing" banners. */
+	async isRebaseInProgress(): Promise<boolean> {
+		const gitDir = await this.getGitDir();
+		return fs.existsSync(path.join(gitDir, 'rebase-merge')) || fs.existsSync(path.join(gitDir, 'rebase-apply'));
 	}
 
 	async listLocalBranches(): Promise<BranchInfo[]> {
@@ -77,12 +112,31 @@ export class GitService {
 		await this.git.raw(['branch', '-m', oldName, newName]);
 	}
 
-	/** The upstream remote branch a local branch tracks, e.g. "origin/main" — undefined if it isn't tracking one. */
+	/** The upstream remote branch a local branch tracks, e.g. "origin/main" — undefined if it isn't
+	 * tracking one, or if it's tracking a remote branch that's since been deleted and pruned. Git keeps
+	 * the upstream configured in that "gone" case (same state `git branch -vv` flags as "[gone]") —
+	 * %(upstream:short) happily returns the name regardless of whether it still resolves to anything,
+	 * so this explicitly verifies it before handing it back, which is what was missing here before:
+	 * getLog (and the fetch/pull/push/sync pickers, all of which call this) would otherwise pass a
+	 * nonexistent ref straight to git and blow up with "fatal: bad revision". */
 	async getUpstreamBranch(branchName: string): Promise<string | undefined> {
 		const out = (
 			await this.git.raw(['for-each-ref', '--format=%(upstream:short)', `refs/heads/${branchName}`])
 		).trim();
-		return out || undefined;
+		if (!out) {
+			this.logger?.(`getUpstreamBranch(${branchName}): no upstream configured`);
+			return undefined;
+		}
+		try {
+			await this.git.raw(['rev-parse', '--verify', '--quiet', `${out}^{commit}`]);
+			this.logger?.(`getUpstreamBranch(${branchName}): upstream "${out}" verified OK`);
+			return out;
+		} catch (err) {
+			this.logger?.(
+				`getUpstreamBranch(${branchName}): upstream "${out}" does not resolve (${(err as Error).message.trim()}) — treating as no upstream`
+			);
+			return undefined;
+		}
 	}
 
 	async fetchBranch(remoteBranchName: string, remote = 'origin'): Promise<void> {
@@ -117,12 +171,31 @@ export class GitService {
 	 * — just tagged `onBranch: false` so the caller can dim them — rather than silently left out. */
 	async getLog(branchName: string): Promise<CommitInfo[]> {
 		const upstream = await this.getUpstreamBranch(branchName);
-		const refs = upstream ? [branchName, upstream] : [branchName];
+		this.logger?.(`getLog(${branchName}): upstream=${upstream ?? '(none)'}`);
 
-		const [out, branchHashesOut] = await Promise.all([
-			this.git.raw(['log', ...refs, `--pretty=format:${LOG_FORMAT}`, '--decorate=short', '--']),
-			this.git.raw(['rev-list', branchName]),
-		]);
+		const runLog = (refs: string[]) =>
+			this.git.raw(['log', ...refs, `--pretty=format:${LOG_FORMAT}`, '--decorate=short', '--']);
+
+		// getUpstreamBranch already verifies the upstream ref resolves before handing it back, but this
+		// is a second, belt-and-suspenders line of defense: if git still rejects the combined revision
+		// list for some other reason, fall back to a plain branch-only log instead of surfacing a hard
+		// error in the History panel — a branch failing to open its history entirely is worse than it
+		// briefly missing the dimmed "behind" commits.
+		const logPromise = (async () => {
+			if (!upstream) {
+				return runLog([branchName]);
+			}
+			try {
+				return await runLog([branchName, upstream]);
+			} catch (err) {
+				this.logger?.(
+					`getLog(${branchName}): log with upstream "${upstream}" failed (${(err as Error).message.trim()}) — retrying without it`
+				);
+				return runLog([branchName]);
+			}
+		})();
+
+		const [out, branchHashesOut] = await Promise.all([logPromise, this.git.raw(['rev-list', branchName])]);
 		const branchHashes = new Set(branchHashesOut.split('\n').filter(Boolean));
 
 		if (!out.trim()) {
@@ -263,6 +336,49 @@ export class GitService {
 		await this.git.raw(['clean', '-f', '--', relPath]);
 	}
 
+	/** Commits whatever's currently staged. Git itself rejects this with "nothing added to commit" if
+	 * the index is empty and `amend` isn't set — no smart-commit fallback to staging everything,
+	 * matching the rest of GGit's explicit stage/unstage model rather than the built-in Git extension's
+	 * implicit "commit all". */
+	async commit(message: string, options: { amend?: boolean } = {}): Promise<void> {
+		const args = ['commit', '-m', message];
+		if (options.amend) {
+			args.push('--amend');
+		}
+		await this.git.raw(args);
+	}
+
+	/** Aggregate +/- across everything currently staged — used for the Commit panel's summary line. */
+	async getStagedStats(): Promise<{ insertions: number; deletions: number }> {
+		const out = await this.git.raw(['diff', '--cached', '--numstat']);
+		let insertions = 0;
+		let deletions = 0;
+		for (const line of out.split('\n')) {
+			if (!line) {
+				continue;
+			}
+			const [added, deleted] = line.split('\t');
+			if (added === '-' || deleted === '-') {
+				continue;
+			}
+			insertions += Number(added) || 0;
+			deletions += Number(deleted) || 0;
+		}
+		return { insertions, deletions };
+	}
+
+	/** The current HEAD commit's message, split into subject/body — what the Commit panel's Amend
+	 * checkbox pre-fills the form with. Undefined for a brand-new repo with no commits yet. */
+	async getHeadCommitMessage(): Promise<{ subject: string; body: string } | undefined> {
+		try {
+			const out = await this.git.raw(['log', '-1', `--pretty=format:%s${FIELD_SEP}%b`]);
+			const [subject, body] = out.split(FIELD_SEP);
+			return { subject: subject ?? '', body: (body ?? '').trim() };
+		} catch {
+			return undefined;
+		}
+	}
+
 	async stageAll(): Promise<void> {
 		await this.git.raw(['add', '-A']);
 	}
@@ -290,17 +406,52 @@ export class GitService {
 		await this.git.raw(args);
 	}
 
-	/** Combined staged + unstaged working-tree changes, one entry per file. */
+	/** Combined staged + unstaged working-tree changes, one entry per file. Excludes anything with an
+	 * unresolved merge conflict — those get their own section via getConflictedFiles instead of showing
+	 * up as an ordinary staged/unstaged change. */
 	async getWorkingChanges(): Promise<WorkingChangeFile[]> {
 		const status = await this.git.status();
-		return status.files.map(f => {
-			const staged = f.index !== ' ' && f.index !== '?';
-			return {
-				path: f.path,
-				status: mapStatusCode(staged ? f.index : f.working_dir),
-				state: staged ? 'staged' : 'unstaged',
-			};
-		});
+		const conflicted = new Set(status.conflicted);
+		return status.files
+			.filter(f => !conflicted.has(f.path))
+			.map(f => {
+				const staged = f.index !== ' ' && f.index !== '?';
+				return {
+					path: f.path,
+					status: mapStatusCode(staged ? f.index : f.working_dir),
+					state: staged ? 'staged' : 'unstaged',
+				};
+			});
+	}
+
+	/** Paths git has flagged as having an unresolved merge conflict (mid-rebase, mid-merge, ...). */
+	async getConflictedFiles(): Promise<ConflictedFile[]> {
+		const status = await this.git.status();
+		return status.conflicted.map(p => ({ path: p }));
+	}
+
+	/** Whichever branch is currently checked out gets rebased onto `branchName`. `--autostash` means a
+	 * dirty working tree never blocks starting a rebase — it's stashed automatically beforehand and
+	 * restored after, so there's no "you have local changes" failure mode to expose a checkbox for.
+	 * `-c core.editor=true` no-ops any editor git would otherwise try to open (there's no TTY here for
+	 * one to be usable anyway, so letting it try would just hang forever). */
+	async rebaseOnto(branchName: string): Promise<void> {
+		await this.git.raw(['-c', 'core.editor=true', 'rebase', branchName, '--autostash']);
+	}
+
+	/** Resumes a paused rebase — call this once every conflicted file has been resolved and staged. */
+	async rebaseContinue(): Promise<void> {
+		await this.git.raw(['-c', 'core.editor=true', 'rebase', '--continue']);
+	}
+
+	/** Drops the current commit being replayed entirely, instead of resolving its conflict. */
+	async rebaseSkip(): Promise<void> {
+		await this.git.raw(['-c', 'core.editor=true', 'rebase', '--skip']);
+	}
+
+	/** Restores the branch to exactly where it was before the rebase started. */
+	async rebaseAbort(): Promise<void> {
+		await this.git.raw(['rebase', '--abort']);
 	}
 
 	async fetch(remote = 'origin'): Promise<void> {

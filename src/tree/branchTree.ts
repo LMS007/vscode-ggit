@@ -1,12 +1,18 @@
 export interface BranchTreeFolder<T> {
 	kind: 'folder';
 	name: string;
+	/** The joined path of segments down to this folder (e.g. "alice") — stable across refreshes so
+	 * TreeItem.id can be set to it, which is what lets VS Code remember a folder's expand/collapse
+	 * state instead of resetting it every time the tree data is rebuilt from scratch. */
+	id: string;
 	children: BranchTreeNode<T>[];
 }
 
 export interface BranchTreeLeaf<T> {
 	kind: 'leaf';
 	name: string;
+	/** The item's full, un-split name — already unique, so it doubles as a stable TreeItem.id. */
+	id: string;
 	item: T;
 }
 
@@ -14,24 +20,27 @@ export type BranchTreeNode<T> = BranchTreeFolder<T> | BranchTreeLeaf<T>;
 
 /** Groups items into a folder tree by splitting each item's name on `/`, e.g. "alice/feature-x" becomes folder "alice" containing leaf "feature-x". */
 export function buildBranchTree<T>(items: T[], getName: (item: T) => string): BranchTreeNode<T>[] {
-	const root: BranchTreeFolder<T> = { kind: 'folder', name: '', children: [] };
+	const root: BranchTreeFolder<T> = { kind: 'folder', name: '', id: '', children: [] };
 	for (const item of items) {
-		const segments = getName(item).split('/').filter(Boolean);
+		const fullName = getName(item);
+		const segments = fullName.split('/').filter(Boolean);
 		let current = root;
+		let folderPath = '';
 		for (let i = 0; i < segments.length - 1; i++) {
 			const segment = segments[i];
+			folderPath = folderPath ? `${folderPath}/${segment}` : segment;
 			const existing = current.children.find(
 				(c): c is BranchTreeFolder<T> => c.kind === 'folder' && c.name === segment
 			);
 			if (existing) {
 				current = existing;
 			} else {
-				const folder: BranchTreeFolder<T> = { kind: 'folder', name: segment, children: [] };
+				const folder: BranchTreeFolder<T> = { kind: 'folder', name: segment, id: folderPath, children: [] };
 				current.children.push(folder);
 				current = folder;
 			}
 		}
-		current.children.push({ kind: 'leaf', name: segments[segments.length - 1] ?? '', item });
+		current.children.push({ kind: 'leaf', name: segments[segments.length - 1] ?? '', id: fullName, item });
 	}
 	return root.children;
 }

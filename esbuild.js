@@ -100,7 +100,26 @@ async function main() {
 		],
 	});
 
-	const contexts = [extensionCtx, webviewCtx, commitFilesWebviewCtx, createBranchWebviewCtx];
+	// The commit form is a fourth, independent webview (subject/body/amend + a staged-files preview),
+	// so it gets its own bundle rather than sharing another panel's.
+	const commitWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/commit/commitWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/commitWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
+	const contexts = [extensionCtx, webviewCtx, commitFilesWebviewCtx, createBranchWebviewCtx, commitWebviewCtx];
 
 	if (watch) {
 		await Promise.all(contexts.map(ctx => ctx.watch()));

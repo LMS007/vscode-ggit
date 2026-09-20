@@ -8,8 +8,10 @@ import { HostMessage, WebviewMessage } from './protocol';
 const SPLIT_STATE_KEY = 'ggit.historyPanel.commitsSplitPercent';
 
 /** Mirrors the Branches toolbar/sidebar Actions view — these always act on the currently checked-out
- * branch, not necessarily the one this panel happens to be showing history for. */
-const TOOLBAR_BUTTONS: { command: string; icon: string; label: string }[] = [
+ * branch, not necessarily the one this panel happens to be showing history for. The trailing three
+ * (stash apply/save, commit) mirror Working Copy's own toolbar buttons instead — same commands, same
+ * behavior, just also reachable from here. */
+const TOOLBAR_BUTTONS: { command: string; icon: string; label: string; primary?: boolean; trailingIcon?: string }[] = [
 	{ command: 'ggit.createBranch', icon: 'add', label: 'Create Branch' },
 	{ command: 'ggit.fetch', icon: 'cloud-download', label: 'Fetch' },
 	{ command: 'ggit.pull', icon: 'arrow-down', label: 'Pull' },
@@ -17,6 +19,12 @@ const TOOLBAR_BUTTONS: { command: string; icon: string; label: string }[] = [
 	{ command: 'ggit.sync', icon: 'sync', label: 'Sync' },
 	{ command: 'ggit.refresh', icon: 'refresh', label: 'Refresh' },
 	{ command: 'ggit.rebase', icon: 'git-merge', label: 'Rebase' },
+	// trailingIcon: a second, direction-indicating arrow to the right of the label — up for bringing a
+	// stash *out* into the working tree, down for putting one *away* into storage — on top of (not
+	// instead of) each button's own leading icon.
+	{ command: 'ggit.applyStash', icon: 'inbox', label: 'Apply Stash', trailingIcon: 'arrow-up' },
+	{ command: 'ggit.stashAll', icon: 'archive', label: 'Save Stash', trailingIcon: 'arrow-down' },
+	{ command: 'ggit.commit', icon: 'check', label: 'Commit', primary: true },
 ];
 
 export class BranchHistoryPanel {
@@ -169,11 +177,18 @@ export class BranchHistoryPanel {
 		);
 		const nonce = getNonce();
 		const initialSplitPercent = context.globalState.get<number>(SPLIT_STATE_KEY, 60);
-		const toolbarButtons = TOOLBAR_BUTTONS.map(
-			b =>
-				`<button class="toolbar-btn" data-command="${b.command}" title="${b.label}" aria-label="${b.label}">` +
-				`<span class="codicon codicon-${b.icon}"></span><span class="toolbar-btn-label">${b.label}</span></button>`
-		).join('');
+		const toolbarButtons = TOOLBAR_BUTTONS.map((b, i) => {
+			// A thin divider right before the stash/commit trio, so they read as a distinct group to
+			// the right of the branch-management buttons rather than just more of the same row.
+			const separator = i === 7 ? '<span class="toolbar-separator"></span>' : '';
+			const classAttr = `toolbar-btn${b.primary ? ' toolbar-btn-primary' : ''}`;
+			const trailingIconHtml = b.trailingIcon ? `<span class="codicon codicon-${b.trailingIcon}"></span>` : '';
+			return (
+				separator +
+				`<button class="${classAttr}" data-command="${b.command}" title="${b.label}" aria-label="${b.label}">` +
+				`<span class="codicon codicon-${b.icon}"></span><span class="toolbar-btn-label">${b.label}</span>${trailingIconHtml}</button>`
+			);
+		}).join('');
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -227,6 +242,24 @@ export class BranchHistoryPanel {
 		}
 		.toolbar-btn-label {
 			white-space: nowrap;
+		}
+		.toolbar-separator {
+			width: 1px;
+			align-self: stretch;
+			background-color: var(--vscode-panel-border);
+			margin: 2px 4px;
+		}
+		.toolbar-btn-primary {
+			border-color: transparent;
+			background-color: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+		.toolbar-btn-primary:hover:not(:disabled) {
+			background-color: var(--vscode-button-hoverBackground);
+		}
+		.toolbar-btn-primary:disabled {
+			opacity: 0.5;
+			cursor: default;
 		}
 		#layout {
 			display: flex;

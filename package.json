@@ -29,6 +29,19 @@
     "views": {
       "ggit": [
         {
+          "id": "ggitConflicts",
+          "name": "Conflicts",
+          "when": "ggit.rebaseInProgress",
+          "initialSize": 2
+        },
+        {
+          "id": "ggitCommitLauncher",
+          "name": "Commit",
+          "type": "webview",
+          "when": "false",
+          "initialSize": 1
+        },
+        {
           "id": "ggitWorkingCopy",
           "name": "Working Copy",
           "initialSize": 2
@@ -86,6 +99,25 @@
         "icon": "$(git-merge)"
       },
       {
+        "command": "ggit.rebaseContinue",
+        "title": "GGit: Continue Rebase",
+        "icon": "$(check)"
+      },
+      {
+        "command": "ggit.rebaseSkip",
+        "title": "GGit: Skip Commit",
+        "icon": "$(debug-step-over)"
+      },
+      {
+        "command": "ggit.rebaseAbort",
+        "title": "GGit: Abort Rebase",
+        "icon": "$(circle-slash)"
+      },
+      {
+        "command": "ggit.markConflictResolved",
+        "title": "Mark as Resolved"
+      },
+      {
         "command": "ggit.refresh",
         "title": "GGit: Refresh",
         "icon": "$(refresh)"
@@ -99,6 +131,11 @@
         "command": "ggit.unstageAll",
         "title": "GGit: Unstage All",
         "icon": "$(remove)"
+      },
+      {
+        "command": "ggit.commit",
+        "title": "GGit: Commit",
+        "icon": "$(check)"
       },
       {
         "command": "ggit.stashAll",
@@ -192,6 +229,21 @@
           "group": "navigation"
         },
         {
+          "command": "ggit.rebaseContinue",
+          "when": "view == ggitConflicts",
+          "group": "navigation@0"
+        },
+        {
+          "command": "ggit.rebaseSkip",
+          "when": "view == ggitConflicts",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ggit.rebaseAbort",
+          "when": "view == ggitConflicts",
+          "group": "navigation@2"
+        },
+        {
           "command": "ggit.stageAll",
           "when": "view == ggitWorkingCopy",
           "group": "navigation@0"
@@ -202,7 +254,7 @@
           "group": "navigation@1"
         },
         {
-          "command": "ggit.stashAll",
+          "command": "ggit.commit",
           "when": "view == ggitWorkingCopy",
           "group": "navigation@2"
         },
@@ -210,6 +262,11 @@
           "command": "ggit.applyStash",
           "when": "view == ggitWorkingCopy",
           "group": "navigation@3"
+        },
+        {
+          "command": "ggit.stashAll",
+          "when": "view == ggitWorkingCopy",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -247,6 +304,11 @@
           "command": "ggit.deleteLocalBranch",
           "when": "view == ggitBranches && viewItem =~ /^branch-/",
           "group": "9_delete@1"
+        },
+        {
+          "command": "ggit.markConflictResolved",
+          "when": "view == ggitConflicts",
+          "group": "1_modification"
         },
         {
           "command": "ggit.applyStashItem",

@@ -17,6 +17,7 @@ const STATUS_COLOR_TOKENS: Record<FileStatus, string> = {
 	C: 'gitDecoration.renamedResourceForeground',
 	T: 'gitDecoration.modifiedResourceForeground',
 	'?': 'gitDecoration.untrackedResourceForeground',
+	U: 'gitDecoration.conflictingResourceForeground',
 };
 
 export class WorkingChangeDecorationProvider implements vscode.FileDecorationProvider {
