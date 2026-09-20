@@ -48,14 +48,23 @@ function renderStaged(files: CommitStagedFile[], insertions: number, deletions: 
 			: `${stagedFileCount} file${stagedFileCount === 1 ? '' : 's'} staged &middot; ` +
 				`<span class="stat-add">+${insertions}</span><span class="stat-del">-${deletions}</span>`;
 
+	// A file with both staged and unstaged changes at once comes through as two rows sharing a path
+	// (see GitService.getWorkingChanges) — same placeholder-until-hunk-UI suffix as Working Copy, so
+	// they're not just two identical-looking rows.
+	const pathCounts = new Map<string, number>();
+	for (const f of files) {
+		pathCounts.set(f.path, (pathCounts.get(f.path) ?? 0) + 1);
+	}
 	filesEl.innerHTML = files
-		.map(
-			f =>
+		.map(f => {
+			const suffix = (pathCounts.get(f.path) ?? 0) > 1 ? ` <span class="file-split-tag">${f.staged ? '(staged)' : '(unstaged)'}</span>` : '';
+			return (
 				`<div class="file-row">` +
 				`<input type="checkbox" class="file-checkbox" data-path="${escapeHtml(f.path)}"${f.staged ? ' checked' : ''} />` +
 				`<span class="file-status status-${f.status}">${f.status}</span>` +
-				`<span class="file-name">${escapeHtml(f.path)}</span></div>`
-		)
+				`<span class="file-name">${escapeHtml(f.path)}${suffix}</span></div>`
+			);
+		})
 		.join('');
 }
 

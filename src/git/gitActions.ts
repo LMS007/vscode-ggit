@@ -1,4 +1,6 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
+import { GGIT_SHOW_SCHEME, INDEX_REF } from '../diff/showContentProvider';
 import { GitService, stripRemotePrefix } from './gitService';
 import { WorkingChangeFile } from './types';
 
@@ -295,4 +297,56 @@ export async function stashPathsWithMessage(gitService: GitService, paths: strin
 		return;
 	}
 	await gitService.stashPaths(paths, message.trim() || undefined);
+}
+
+/** Resolves the file + 1-indexed line range GGit's own hunk stage/unstage commands should act on,
+ * from whatever's currently focused. Uses the full selection (`start`/`end`, always in document
+ * order regardless of which direction it was dragged) rather than just the cursor's resting point --
+ * GitService.extractHunkPatch matches against the whole range, which is what makes a selection that
+ * overlaps a hunk without landing exactly inside its declared bounds still resolve correctly. `side`
+ * picks which half of a GGit working-change diff this is meaningful from: the real working-tree file
+ * (right side of an unstaged row's diff) to stage a hunk, or the index-content side (right side of a
+ * staged row's diff, GGit's own ggit-show scheme with the INDEX_REF marker) to unstage one. Throws a
+ * clear, actionable error instead of a raw "cannot read property of undefined" if the cursor isn't
+ * somewhere this makes sense. */
+function resolveHunkTarget(
+	gitService: GitService,
+	side: 'unstaged' | 'staged'
+): { relPath: string; startLine: number; endLine: number } {
+	const editor = vscode.window.activeTextEditor;
+	if (!editor) {
+		throw new Error('No active editor — place the cursor in a diff first.');
+	}
+	const uri = editor.document.uri;
+	const startLine = editor.selection.start.line + 1;
+	const endLine = editor.selection.end.line + 1;
+
+	if (side === 'unstaged') {
+		if (uri.scheme !== 'file') {
+			throw new Error("Place the cursor in the working-tree (right) side of an unstaged change's diff.");
+		}
+		return { relPath: path.relative(gitService.repoRoot, uri.fsPath), startLine, endLine };
+	}
+	if (uri.scheme !== GGIT_SHOW_SCHEME) {
+		throw new Error("Place the cursor in the staged (index) side of a staged change's diff.");
+	}
+	const ref = new URLSearchParams(uri.query).get('ref');
+	if (ref !== INDEX_REF) {
+		throw new Error("This isn't a staged-changes diff.");
+	}
+	return { relPath: uri.path.replace(/^\//, ''), startLine, endLine };
+}
+
+/** GGit's own replacement for the built-in Git extension's "Stage Selected Ranges" — that command
+ * silently no-ops against GGit's diffs (verified: it depends on the built-in extension's own
+ * document/URI model to know what to stage, which GGit's diff content providers don't match), so
+ * this stages the hunk under the cursor directly via GitService instead of relying on it. */
+export async function stageHunkAtCursor(gitService: GitService): Promise<void> {
+	const { relPath, startLine, endLine } = resolveHunkTarget(gitService, 'unstaged');
+	await gitService.stageHunkAtLine(relPath, startLine, endLine);
+}
+
+export async function unstageHunkAtCursor(gitService: GitService): Promise<void> {
+	const { relPath, startLine, endLine } = resolveHunkTarget(gitService, 'staged');
+	await gitService.unstageHunkAtLine(relPath, startLine, endLine);
 }

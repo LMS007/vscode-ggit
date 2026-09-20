@@ -155,6 +155,16 @@
         "title": "Stash Selected Files"
       },
       {
+        "command": "ggit.stageHunkAtCursor",
+        "title": "GGit: Stage Hunk",
+        "icon": "$(add)"
+      },
+      {
+        "command": "ggit.unstageHunkAtCursor",
+        "title": "GGit: Unstage Hunk",
+        "icon": "$(remove)"
+      },
+      {
         "command": "ggit.openWorkingChangeFile",
         "title": "Open File",
         "icon": "$(go-to-file)"
@@ -190,6 +200,30 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "ggit.stageHunkAtCursor",
+          "when": "isInDiffEditor && isInDiffRightEditor && resourceScheme == file",
+          "group": "3_ggit_hunk@1"
+        },
+        {
+          "command": "ggit.unstageHunkAtCursor",
+          "when": "isInDiffEditor && isInDiffRightEditor && resourceScheme == ggit-show",
+          "group": "3_ggit_hunk@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "ggit.stageHunkAtCursor",
+          "when": "isInDiffEditor && isInDiffRightEditor && resourceScheme == file",
+          "group": "1_ggit_hunk@1"
+        },
+        {
+          "command": "ggit.unstageHunkAtCursor",
+          "when": "isInDiffEditor && isInDiffRightEditor && resourceScheme == ggit-show",
+          "group": "1_ggit_hunk@1"
+        }
+      ],
       "view/title": [
         {
           "command": "ggit.createBranch",

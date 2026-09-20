@@ -29,6 +29,12 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
+	// A file with both staged and unstaged changes at once renders as two rows sharing a path (see
+	// GitService.getWorkingChanges) — this is how getTreeItem knows to visually tell them apart.
+	// Populated by getChildren and read by getTreeItem; safe because VS Code always calls
+	// getChildren for a freshly-rendered level before asking for its items' TreeItems.
+	private splitPaths = new Set<string>();
+
 	constructor(private readonly gitService: GitService) {}
 
 	refresh(): void {
@@ -40,11 +46,22 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 			return [];
 		}
 		const files = await this.gitService.getWorkingChanges();
-		// Sorted by path only — deliberately not re-grouped by staged/unstaged, so checking a box
-		// doesn't reshuffle the list out from under you.
-		const sorted = files.sort((a, b) => a.path.localeCompare(b.path));
+		// Sorted by path first — deliberately not re-grouped by staged/unstaged, so checking a box
+		// doesn't reshuffle the list out from under you — then staged-before-unstaged only to give a
+		// deterministic order to the two rows a split (partially-staged) path produces.
+		const sorted = files.sort(
+			(a, b) => a.path.localeCompare(b.path) || (a.state === b.state ? 0 : a.state === 'staged' ? -1 : 1)
+		);
+		const pathCounts = new Map<string, number>();
+		for (const f of sorted) {
+			pathCounts.set(f.path, (pathCounts.get(f.path) ?? 0) + 1);
+		}
+		this.splitPaths = new Set([...pathCounts].filter(([, count]) => count > 1).map(([p]) => p));
 		const stagedCount = sorted.filter(f => f.state === 'staged').length;
-		const allStaged = sorted.length > 0 && stagedCount === sorted.length;
+		const allStaged = sorted.length > 0 && sorted.every(f => f.state === 'staged');
+		this.gitService.log(
+			`WorkingCopyTreeProvider.getChildren: ${sorted.length} row(s), splitPaths=${JSON.stringify([...this.splitPaths])}`
+		);
 		return [{ kind: 'createCommit', allStaged, stagedCount }, ...sorted];
 	}
 
@@ -64,13 +81,22 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		}
 		const file = node;
 		const dir = path.dirname(file.path);
+		const dirLabel = dir === '.' ? undefined : dir;
 		const item = new vscode.TreeItem(path.basename(file.path), vscode.TreeItemCollapsibleState.None);
-		item.description = dir === '.' ? undefined : dir;
+		const isSplit = this.splitPaths.has(file.path);
+		// Placeholder until real hunk-level staging UI exists: a file with both staged and unstaged
+		// changes at once (see GitService.getWorkingChanges) renders as two rows sharing a name, so
+		// this label is the only thing telling them apart right now.
+		item.description = isSplit
+			? [dirLabel, file.state === 'staged' ? '(staged)' : '(unstaged)'].filter(Boolean).join('  ')
+			: dirLabel;
 		item.resourceUri = toWorkingChangeUri(file.path, file.status);
 		item.checkboxState =
 			file.state === 'staged' ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
 		item.contextValue = file.state === 'staged' ? 'workingChangeStaged' : 'workingChangeUnstaged';
-		item.tooltip = `${file.path} (${file.state})`;
+		item.tooltip = isSplit
+			? `${file.path} — ${file.state === 'staged' ? 'staged portion' : 'remaining unstaged changes'} (this file has both)`
+			: `${file.path} (${file.state})`;
 		item.command = {
 			command: 'ggit.openWorkingChangeDiff',
 			title: 'Open Diff',

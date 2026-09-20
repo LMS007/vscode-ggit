@@ -24,6 +24,20 @@ export class GGitShowContentProvider implements vscode.TextDocumentContentProvid
 
 	constructor(private readonly gitService: GitService) {}
 
+	/** Tells VS Code to re-fetch content for every currently-open ggit-show document (HEAD/index
+	 * views). This was never called anywhere before, which is why an already-open diff went stale
+	 * after staging, unstaging, committing, or discarding changes elsewhere -- provideTextDocumentContent
+	 * only re-runs when this event fires for a given URI, and nothing ever fired it. There's no cheap
+	 * way to know exactly which URIs' underlying git content actually changed, so this just re-fetches
+	 * all open ones; each is a single small `git show`, not expensive to redo on every refresh. */
+	refresh(): void {
+		for (const doc of vscode.workspace.textDocuments) {
+			if (doc.uri.scheme === GGIT_SHOW_SCHEME) {
+				this._onDidChange.fire(doc.uri);
+			}
+		}
+	}
+
 	async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
 		const ref = new URLSearchParams(uri.query).get('ref');
 		if (!ref || ref === EMPTY_REF) {

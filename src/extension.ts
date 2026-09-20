@@ -16,9 +16,11 @@ import {
 	pushCurrentBranch,
 	rebaseCurrentBranchWithPicker,
 	renameLocalBranch,
+	stageHunkAtCursor,
 	stashAllWithMessage,
 	stashPathsWithMessage,
 	syncCurrentBranch,
+	unstageHunkAtCursor,
 } from './git/gitActions';
 import { GitService } from './git/gitService';
 import { BranchInfo, ConflictedFile, StashInfo, WorkingChangeFile } from './git/types';
@@ -43,6 +45,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	// state) rather than the clean throwaway repos used to test this stuff in isolation.
 	const output = vscode.window.createOutputChannel('GGit');
 	context.subscriptions.push(output);
+	output.appendLine(`GGit: activated at ${new Date().toISOString()}, repoRoot=${workspaceFolder.uri.fsPath}`);
 
 	const gitService = new GitService(workspaceFolder.uri.fsPath, message => output.appendLine(message));
 
@@ -57,6 +60,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	const activeBranchDecorations = new ActiveBranchDecorationProvider();
 	const workingChangeDecorations = new WorkingChangeDecorationProvider();
+	const showContentProvider = new GGitShowContentProvider(gitService);
 
 	const workingCopyView = vscode.window.createTreeView('ggitWorkingCopy', {
 		treeDataProvider: workingCopyProvider,
@@ -74,8 +78,10 @@ export function activate(context: vscode.ExtensionContext): void {
 	// is enough to badge the whole "GGit" icon.
 	const updateWorkingCopyBadge = async () => {
 		const files = await gitService.getWorkingChanges();
-		workingCopyView.badge =
-			files.length > 0 ? { value: files.length, tooltip: `${files.length} changed file${files.length === 1 ? '' : 's'}` } : undefined;
+		// Distinct paths, not rows -- a partially-staged file produces two rows (see
+		// GitService.getWorkingChanges) but is still only one changed file for this count.
+		const count = new Set(files.map(f => f.path)).size;
+		workingCopyView.badge = count > 0 ? { value: count, tooltip: `${count} changed file${count === 1 ? '' : 's'}` } : undefined;
 	};
 
 	// There's no public API to change the "GGit" text at the very top of the container itself — that
@@ -104,6 +110,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		conflictsProvider.refresh();
 		activeBranchDecorations.refresh();
 		workingChangeDecorations.refresh();
+		showContentProvider.refresh();
 		void updateWorkingCopyBadge();
 		void updateRebaseContext();
 		void updateActiveBranchLabel();
@@ -116,16 +123,19 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	workingCopyView.onDidChangeCheckboxState(async e => {
 		for (const [node, state] of e.items) {
+			const stateLabel = state === vscode.TreeItemCheckboxState.Checked ? 'Checked' : 'Unchecked';
 			try {
 				if (isCreateCommitNode(node)) {
 					// The pinned row's checkbox is a check-all/uncheck-all for staging, not a
 					// per-file toggle.
+					output.appendLine(`checkbox: Create Commit row -> ${stateLabel}`);
 					if (state === vscode.TreeItemCheckboxState.Checked) {
 						await gitService.stageAll();
 					} else {
 						await gitService.unstageAll();
 					}
 				} else if (isWorkingChangeFile(node)) {
+					output.appendLine(`checkbox: "${node.path}" (row was ${node.state}) -> ${stateLabel}`);
 					if (state === vscode.TreeItemCheckboxState.Checked) {
 						await gitService.stageFile(node.path);
 					} else {
@@ -133,6 +143,7 @@ export function activate(context: vscode.ExtensionContext): void {
 					}
 				}
 			} catch (err) {
+				output.appendLine(`checkbox: error -- ${(err as Error).message}`);
 				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
 			}
 		}
@@ -151,7 +162,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		// Multi-select is for bulk delete only — Apply always acts on just the row you right-clicked,
 		// ignoring the rest of the selection (see ggit.applyStashItem below).
 		vscode.window.createTreeView('ggitStashes', { treeDataProvider: stashesProvider, canSelectMany: true }),
-		vscode.workspace.registerTextDocumentContentProvider(GGIT_SHOW_SCHEME, new GGitShowContentProvider(gitService)),
+		vscode.workspace.registerTextDocumentContentProvider(GGIT_SHOW_SCHEME, showContentProvider),
 		vscode.window.registerFileDecorationProvider(activeBranchDecorations),
 		vscode.window.registerFileDecorationProvider(workingChangeDecorations),
 
@@ -258,6 +269,34 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('ggit.unstageAll', () =>
 			runGitOperation('Unstaging all changes…', () => gitService.unstageAll(), refreshAll)
 		),
+
+		// Not routed through runGitOperation -- a hunk stage/unstage is effectively instant, so a
+		// progress notification would just flash uselessly. Logged directly instead, since this is
+		// the fiddliest bit of git plumbing in the extension and worth being able to see exactly what
+		// happened (see GitService.stageHunkAtLine/unstageHunkAtLine for the "why" on both commands).
+		vscode.commands.registerCommand('ggit.stageHunkAtCursor', async () => {
+			console.log('[GGit] ggit.stageHunkAtCursor invoked');
+			try {
+				await stageHunkAtCursor(gitService);
+				output.appendLine('ggit.stageHunkAtCursor: succeeded');
+				refreshAll();
+			} catch (err) {
+				output.appendLine(`ggit.stageHunkAtCursor: error -- ${(err as Error).message}`);
+				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+			}
+		}),
+
+		vscode.commands.registerCommand('ggit.unstageHunkAtCursor', async () => {
+			console.log('[GGit] ggit.unstageHunkAtCursor invoked');
+			try {
+				await unstageHunkAtCursor(gitService);
+				output.appendLine('ggit.unstageHunkAtCursor: succeeded');
+				refreshAll();
+			} catch (err) {
+				output.appendLine(`ggit.unstageHunkAtCursor: error -- ${(err as Error).message}`);
+				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+			}
+		}),
 
 		vscode.commands.registerCommand('ggit.commit', () => {
 			CommitPanel.createOrShow(context, gitService, refreshAll);

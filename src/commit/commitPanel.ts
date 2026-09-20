@@ -345,6 +345,10 @@ export class CommitPanel {
 			text-overflow: ellipsis;
 			white-space: nowrap;
 		}
+		.file-split-tag {
+			color: var(--vscode-descriptionForeground);
+			font-weight: normal;
+		}
 	</style>
 </head>
 <body>

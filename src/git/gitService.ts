@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { simpleGit, SimpleGit } from 'simple-git';
 import {
@@ -27,6 +28,12 @@ export class GitService {
 		// reasonable when that value could come from user input, but ours is always the hardcoded
 		// literal "true" (see rebaseOnto/rebaseContinue/rebaseSkip below), never anything external.
 		this.git = simpleGit({ baseDir: repoRoot, unsafe: { allowUnsafeEditor: true } });
+	}
+
+	/** Lets other classes holding a GitService reference (tree providers, panels) write to the same
+	 * "GGit" output channel this is constructed with, without each one needing its own wiring. */
+	log(message: string): void {
+		this.logger?.(message);
 	}
 
 	async isGitRepository(): Promise<boolean> {
@@ -478,22 +485,89 @@ export class GitService {
 		await this.git.raw(args);
 	}
 
-	/** Combined staged + unstaged working-tree changes, one entry per file. Excludes anything with an
-	 * unresolved merge conflict — those get their own section via getConflictedFiles instead of showing
-	 * up as an ordinary staged/unstaged change. */
+	/** Combined staged + unstaged working-tree changes. Usually one entry per file, but a file with
+	 * changes on *both* sides at once (git's status reports this as e.g. "MM" — some hunks staged,
+	 * the rest still not) becomes two entries sharing the same path, one per state, rather than
+	 * picking one side and silently hiding the other — there's no single FileStatus that could
+	 * represent both. Verified against real `git status` output for a partially-staged file before
+	 * relying on this: index and working_dir really do come back as two independent, simultaneously
+	 * non-blank codes in that case. Excludes anything with an unresolved merge conflict — those get
+	 * their own section via getConflictedFiles instead of showing up as an ordinary change. */
 	async getWorkingChanges(): Promise<WorkingChangeFile[]> {
 		const status = await this.git.status();
 		const conflicted = new Set(status.conflicted);
-		return status.files
-			.filter(f => !conflicted.has(f.path))
-			.map(f => {
-				const staged = f.index !== ' ' && f.index !== '?';
-				return {
-					path: f.path,
-					status: mapStatusCode(staged ? f.index : f.working_dir),
-					state: staged ? 'staged' : 'unstaged',
-				};
-			});
+		const changes: WorkingChangeFile[] = [];
+		for (const f of status.files) {
+			if (conflicted.has(f.path)) {
+				continue;
+			}
+			if (f.index === '?') {
+				// Untracked -- git reports both columns as '?'; nothing about it can be "staged" yet.
+				changes.push({ path: f.path, status: '?', state: 'unstaged' });
+				continue;
+			}
+			if (f.index !== ' ') {
+				changes.push({ path: f.path, status: mapStatusCode(f.index), state: 'staged' });
+			}
+			if (f.working_dir !== ' ') {
+				changes.push({ path: f.path, status: mapStatusCode(f.working_dir), state: 'unstaged' });
+			}
+			if (f.index !== ' ' && f.index !== '?' && f.working_dir !== ' ') {
+				this.logger?.(
+					`getWorkingChanges: "${f.path}" is split -- index="${f.index}" working_dir="${f.working_dir}"`
+				);
+			}
+		}
+		this.logger?.(
+			`getWorkingChanges: ${status.files.length} raw entr${status.files.length === 1 ? 'y' : 'ies'} -> ${changes.length} row(s): ` +
+				JSON.stringify(changes)
+		);
+		return changes;
+	}
+
+	/** Stages exactly one hunk of a file's currently-unstaged changes -- the hunk whose line range in
+	 * the new (working-tree) file contains `line` (1-indexed). This is GGit's own replacement for the
+	 * built-in Git extension's "Stage Selected Ranges": that command silently no-ops against GGit's
+	 * diffs (verified -- it depends on the built-in extension's own document/URI model to know what to
+	 * stage, which GGit's diff content providers don't match), so hunk staging needs its own real
+	 * implementation rather than relying on a menu item that happens to render. */
+	async stageHunkAtLine(relPath: string, startLine: number, endLine: number): Promise<void> {
+		const diffText = await this.git.raw(['diff', '--', relPath]);
+		const patch = extractHunkPatch(diffText, startLine, endLine);
+		if (!patch) {
+			throw new Error(`No unstaged change found at line ${startLine} in "${relPath}".`);
+		}
+		this.logger?.(`stageHunkAtLine(${relPath}, ${startLine}-${endLine}): applying:\n${patch}`);
+		await this.applyPatchToIndex(patch);
+	}
+
+	/** The reverse of stageHunkAtLine -- un-stages exactly one hunk of a file's currently staged
+	 * changes, found the same way but against the HEAD-vs-index diff instead. */
+	async unstageHunkAtLine(relPath: string, startLine: number, endLine: number): Promise<void> {
+		const diffText = await this.git.raw(['diff', '--cached', '--', relPath]);
+		const patch = extractHunkPatch(diffText, startLine, endLine);
+		if (!patch) {
+			throw new Error(`No staged change found at line ${startLine} in "${relPath}".`);
+		}
+		this.logger?.(`unstageHunkAtLine(${relPath}, ${startLine}-${endLine}): reverse-applying:\n${patch}`);
+		await this.applyPatchToIndex(patch, { reverse: true });
+	}
+
+	/** `git apply` only reads patches from a file, not stdin via simple-git's API -- writes the patch
+	 * to a scratch file under the OS temp dir and cleans it up immediately after, success or failure. */
+	private async applyPatchToIndex(patch: string, options: { reverse?: boolean } = {}): Promise<void> {
+		const tmpFile = path.join(os.tmpdir(), `ggit-hunk-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
+		await fs.promises.writeFile(tmpFile, patch, 'utf8');
+		try {
+			const args = ['apply', '--cached'];
+			if (options.reverse) {
+				args.push('--reverse');
+			}
+			args.push(tmpFile);
+			await this.git.raw(args);
+		} finally {
+			await fs.promises.unlink(tmpFile).catch(() => {});
+		}
 	}
 
 	/** Paths git has flagged as having an unresolved merge conflict (mid-rebase, mid-merge, ...). */
@@ -549,6 +623,60 @@ function safeRealpath(p: string): string {
 	} catch {
 		return path.resolve(p);
 	}
+}
+
+/** Slices one hunk out of a single-file unified diff, keyed by which hunk's *new-file* line range
+ * overlaps [startLine, endLine] (1-indexed, inclusive) -- the working-tree side for a plain
+ * `git diff`, or the index side for `git diff --cached`. Returns the file header (the
+ * `diff --git`/`index`/`---`/`+++` lines) plus just that one hunk's block, which `git apply` accepts
+ * as a complete, self-contained patch on its own -- verified against a real multi-hunk file before
+ * relying on this, since each hunk in unified-diff format carries its own absolute line numbers
+ * rather than being cumulative with the others.
+ *
+ * A selection that overlaps a hunk's declared range is preferred, but a selection dragged a little
+ * past a hunk's trailing context (VS Code's diff editor doesn't visually mark exactly where a hunk's
+ * boundary is) falls back to the nearest hunk instead of failing outright -- verified against a real
+ * repro: selecting from inside a change down into unrelated unchanged lines below it used to report
+ * "no diff here" even though the selection clearly included a real change. Only returns undefined if
+ * there's no diff for this file at all. */
+function extractHunkPatch(diffText: string, startLine: number, endLine: number): string | undefined {
+	const lines = diffText.split(/(?<=\n)/);
+	const hunkStarts: number[] = [];
+	lines.forEach((l, i) => {
+		if (l.startsWith('@@')) {
+			hunkStarts.push(i);
+		}
+	});
+	if (hunkStarts.length === 0) {
+		return undefined;
+	}
+	const header = lines.slice(0, hunkStarts[0]).join('');
+
+	const hunks: { newStart: number; rangeEnd: number; block: string }[] = [];
+	for (let i = 0; i < hunkStarts.length; i++) {
+		const start = hunkStarts[i];
+		const end = i + 1 < hunkStarts.length ? hunkStarts[i + 1] : lines.length;
+		const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(lines[start]);
+		if (!match) {
+			continue;
+		}
+		const newStart = Number(match[1]);
+		const newCount = match[2] !== undefined ? Number(match[2]) : 1;
+		hunks.push({ newStart, rangeEnd: newStart + Math.max(newCount, 1) - 1, block: lines.slice(start, end).join('') });
+	}
+	if (hunks.length === 0) {
+		return undefined;
+	}
+
+	const overlapping = hunks.find(h => h.newStart <= endLine && h.rangeEnd >= startLine);
+	if (overlapping) {
+		return header + overlapping.block;
+	}
+
+	const distance = (h: { newStart: number; rangeEnd: number }) =>
+		h.rangeEnd < startLine ? startLine - h.rangeEnd : h.newStart - endLine;
+	const nearest = hunks.reduce((best, h) => (distance(h) < distance(best) ? h : best));
+	return header + nearest.block;
 }
 
 /** Maps a `git status --porcelain` code (index or working_dir column) to our FileStatus union. */
