@@ -9,7 +9,9 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "extensionKind": [
     "workspace"
@@ -40,6 +42,11 @@
           "id": "ggitRemotes",
           "name": "Remotes",
           "initialSize": 3
+        },
+        {
+          "id": "ggitStashes",
+          "name": "Stashes",
+          "initialSize": 2
         }
       ]
     },
@@ -105,34 +112,41 @@
       },
       {
         "command": "ggit.stashSelectedFiles",
-        "title": "GGit: Stash Selected Files"
+        "title": "Stash Selected Files"
       },
       {
         "command": "ggit.openWorkingChangeFile",
-        "title": "GGit: Open File",
+        "title": "Open File",
         "icon": "$(go-to-file)"
       },
       {
         "command": "ggit.discardChanges",
-        "title": "GGit: Discard Local Changes",
-        "enablement": "viewItem =~ /discardable/"
+        "title": "Discard Local Changes"
       },
       {
         "command": "ggit.createBranchFrom",
-        "title": "GGit: Create New Branch from Here"
+        "title": "Create New Branch from Here"
       },
       {
         "command": "ggit.deleteLocalBranch",
-        "title": "GGit: Delete Local Branch",
+        "title": "Delete Local Branch",
         "enablement": "viewItem != 'branch-head'"
       },
       {
         "command": "ggit.renameLocalBranch",
-        "title": "GGit: Rename Local Branch"
+        "title": "Rename Local Branch"
       },
       {
         "command": "ggit.copyBranchName",
-        "title": "GGit: Copy Branch Name"
+        "title": "Copy Branch Name"
+      },
+      {
+        "command": "ggit.applyStashItem",
+        "title": "Apply Stash"
+      },
+      {
+        "command": "ggit.deleteStash",
+        "title": "Delete Stash"
       }
     ],
     "menus": {
@@ -232,6 +246,16 @@
         {
           "command": "ggit.deleteLocalBranch",
           "when": "view == ggitBranches && viewItem =~ /^branch-/",
+          "group": "9_delete@1"
+        },
+        {
+          "command": "ggit.applyStashItem",
+          "when": "view == ggitStashes && viewItem == stash",
+          "group": "1_apply@1"
+        },
+        {
+          "command": "ggit.deleteStash",
+          "when": "view == ggitStashes && viewItem == stash",
           "group": "9_delete@1"
         }
       ]

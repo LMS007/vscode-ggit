@@ -93,14 +93,16 @@ export class CommitFilesPanel {
 				this.ready = true;
 				this.post();
 				break;
-			case 'selectFile':
+			case 'selectFile': {
 				this.selectedIndex = msg.index;
+				const file = this.files[msg.index];
 				try {
-					await openDiffForFile(this.gitService, this.sha, this.files[msg.index]);
+					await openDiffForFile(this.gitService, file.sourceRef ?? this.sha, file);
 				} catch (err) {
 					vscode.window.showErrorMessage(`Failed to open diff: ${(err as Error).message}`);
 				}
 				break;
+			}
 		}
 	}
 

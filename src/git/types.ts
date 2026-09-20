@@ -1,6 +1,10 @@
 export interface BranchInfo {
 	name: string;
 	isHead: boolean;
+	/** Commits on this branch not yet on its upstream, and vice versa — undefined (not 0) when
+	 * there's nothing to report, so callers don't need to check both "has an upstream" and "is 0". */
+	ahead?: number;
+	behind?: number;
 }
 
 export interface RemoteBranchInfo {
@@ -22,6 +26,9 @@ export interface CommitInfo {
 	date: string;
 	message: string;
 	refs: RefBadge[];
+	/** False for a commit that's only reachable from the branch's upstream, not the branch itself
+	 * yet (i.e. it's "behind") — shown dimmed rather than left out, same as Tower does. */
+	onBranch: boolean;
 }
 
 export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | '?';
@@ -33,6 +40,9 @@ export interface ChangedFile {
 	insertions?: number;
 	deletions?: number;
 	binary?: boolean;
+	/** Overrides which commit openDiffForFile diffs this file against — needed for a stash's
+	 * untracked files, which live in a separate commit from the stash entry itself. */
+	sourceRef?: string;
 }
 
 export type WorkingChangeState = 'staged' | 'unstaged';
@@ -41,4 +51,14 @@ export interface WorkingChangeFile {
 	path: string;
 	status: FileStatus;
 	state: WorkingChangeState;
+}
+
+export interface StashInfo {
+	/** "stash@{0}" — the reflog-style ref git's own stash commands expect. */
+	ref: string;
+	/** The stash commit's own hash — stable even if the list re-indexes, and generic commit-diffing
+	 * code (getCommitFiles, getFileContentAtRevision, openDiffForFile) already accepts any commit-ish. */
+	hash: string;
+	message: string;
+	date: string;
 }

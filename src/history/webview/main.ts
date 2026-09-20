@@ -12,6 +12,7 @@ const commitsEl = document.getElementById('commits')!;
 const filesEl = document.getElementById('files')!;
 const splitterEl = document.getElementById('splitter')!;
 const toolbarEl = document.getElementById('toolbar')!;
+const commitContextMenuEl = document.getElementById('commitContextMenu')!;
 
 toolbarEl.addEventListener('click', event => {
 	const btn = (event.target as HTMLElement).closest<HTMLElement>('.toolbar-btn[data-command]');
@@ -46,7 +47,7 @@ function renderCommits(commits: CommitInfo[]): void {
 	}
 	commitsEl.innerHTML = commits
 		.map(
-			c => `<div class="commit-row-wrapper">
+			c => `<div class="commit-row-wrapper${c.onBranch ? '' : ' not-on-branch'}">
 				<div class="commit-graph">
 					<div class="commit-graph-line"></div>
 					<div class="commit-graph-dot"></div>
@@ -124,6 +125,72 @@ commitsEl.addEventListener('click', event => {
 	}
 });
 
+let contextMenuSha: string | undefined;
+
+function hideContextMenu(): void {
+	commitContextMenuEl.hidden = true;
+	contextMenuSha = undefined;
+}
+
+function showContextMenu(x: number, y: number, sha: string): void {
+	contextMenuSha = sha;
+	commitContextMenuEl.hidden = false;
+	commitContextMenuEl.style.left = `${x}px`;
+	commitContextMenuEl.style.top = `${y}px`;
+	// Re-clamp after layout so the menu never renders partially off-screen near an edge.
+	requestAnimationFrame(() => {
+		const rect = commitContextMenuEl.getBoundingClientRect();
+		if (rect.right > window.innerWidth) {
+			commitContextMenuEl.style.left = `${Math.max(0, window.innerWidth - rect.width - 4)}px`;
+		}
+		if (rect.bottom > window.innerHeight) {
+			commitContextMenuEl.style.top = `${Math.max(0, window.innerHeight - rect.height - 4)}px`;
+		}
+	});
+}
+
+commitsEl.addEventListener('contextmenu', event => {
+	const row = (event.target as HTMLElement).closest<HTMLElement>('.row[data-sha]');
+	if (!row) {
+		return;
+	}
+	event.preventDefault();
+	activePane = 'commits';
+	selectCommit(row.dataset.sha!);
+	showContextMenu(event.clientX, event.clientY, row.dataset.sha!);
+});
+
+commitContextMenuEl.addEventListener('click', event => {
+	const item = (event.target as HTMLElement).closest<HTMLElement>('.context-menu-item[data-action]');
+	const sha = contextMenuSha;
+	hideContextMenu();
+	if (!item || !sha) {
+		return;
+	}
+	const commit = currentCommits.find(c => c.hash === sha);
+	switch (item.dataset.action) {
+		case 'resetMixed':
+			vscodeApi.postMessage({ type: 'resetHead', sha, mode: 'mixed' });
+			break;
+		case 'resetHard':
+			vscodeApi.postMessage({ type: 'resetHead', sha, mode: 'hard' });
+			break;
+		case 'cherryPick':
+			vscodeApi.postMessage({ type: 'cherryPick', sha });
+			break;
+		case 'savePatch':
+			vscodeApi.postMessage({ type: 'savePatch', sha, subject: commit?.message ?? sha });
+			break;
+	}
+});
+
+window.addEventListener('click', event => {
+	if (!commitContextMenuEl.hidden && !commitContextMenuEl.contains(event.target as Node)) {
+		hideContextMenu();
+	}
+});
+window.addEventListener('blur', hideContextMenu);
+
 function selectCommitByOffset(offset: number): void {
 	if (currentCommits.length === 0) {
 		return;
@@ -169,6 +236,10 @@ function selectFileByOffset(offset: number): void {
 }
 
 window.addEventListener('keydown', event => {
+	if (event.key === 'Escape') {
+		hideContextMenu();
+		return;
+	}
 	if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
 		return;
 	}
@@ -192,14 +263,21 @@ filesEl.addEventListener('click', event => {
 window.addEventListener('message', event => {
 	const message = event.data as HostMessage;
 	switch (message.type) {
-		case 'commits':
+		case 'commits': {
 			renderCommits(message.commits);
-			if (message.commits.length > 0) {
-				selectCommit(message.commits[0].hash);
-			} else {
+			if (message.commits.length === 0) {
 				filesEl.innerHTML = '<div class="empty">Select a commit to see its changed files.</div>';
+				break;
+			}
+			// Sticky selection across a branch switch: stay on the same commit if the new branch's
+			// log still contains it (a shared ancestor, most likely), otherwise fall back to the top.
+			const stillPresent = selectedSha && message.commits.some(c => c.hash === selectedSha);
+			selectCommit(stillPresent ? selectedSha! : message.commits[0].hash);
+			if (stillPresent) {
+				commitsEl.querySelector<HTMLElement>(`.row[data-sha="${selectedSha}"]`)?.scrollIntoView({ block: 'nearest' });
 			}
 			break;
+		}
 		case 'files':
 			if (message.sha === selectedSha) {
 				renderFiles(message.files);

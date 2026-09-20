@@ -48,7 +48,8 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 				}
 			: new vscode.ThemeIcon('git-branch');
 		item.resourceUri = toBranchUri(branch.name);
-		item.description = branch.isHead ? 'HEAD' : undefined;
+		const descriptionParts = [branch.isHead ? 'HEAD' : undefined, formatTracking(branch)].filter(Boolean);
+		item.description = descriptionParts.length > 0 ? descriptionParts.join(' ') : undefined;
 		// "-head" vs "-normal" lets ggit.deleteLocalBranch's `enablement` grey itself out for the
 		// checked-out branch (see package.json) — git itself refuses to delete it anyway, but a
 		// disabled menu entry says so up front instead of via an error after clicking.
@@ -60,6 +61,21 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 		};
 		return item;
 	}
+}
+
+/** "↑9" ahead, "↓8" behind, "↑2 ↓3" diverged, or undefined if up to date / no upstream. There's no
+ * TreeItem API for Tower's colored-circle-plus-arrow badge, so this leans on the same description
+ * field already used for "HEAD" — the arrow characters are as close to a compact icon as plain text
+ * gets here. */
+function formatTracking(branch: BranchInfo): string | undefined {
+	const parts: string[] = [];
+	if (branch.ahead) {
+		parts.push(`↑${branch.ahead}`);
+	}
+	if (branch.behind) {
+		parts.push(`↓${branch.behind}`);
+	}
+	return parts.length > 0 ? parts.join(' ') : undefined;
 }
 
 /** Whether the current HEAD branch lives anywhere under this folder — used to color it green. */

@@ -1,9 +1,10 @@
 import { simpleGit, SimpleGit } from 'simple-git';
-import { BranchInfo, ChangedFile, CommitInfo, FileStatus, RefBadge, RemoteBranchInfo, WorkingChangeFile } from './types';
+import { BranchInfo, ChangedFile, CommitInfo, FileStatus, RefBadge, RemoteBranchInfo, StashInfo, WorkingChangeFile } from './types';
 
 const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const FIELD_SEP = '\x1f';
 const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(FIELD_SEP);
+const STASH_FORMAT = ['%gd', '%H', '%s', '%aI'].join(FIELD_SEP);
 
 export class GitService {
 	private readonly git: SimpleGit;
@@ -17,8 +18,24 @@ export class GitService {
 	}
 
 	async listLocalBranches(): Promise<BranchInfo[]> {
-		const summary = await this.git.branchLocal();
-		return summary.all.map(name => ({ name, isHead: name === summary.current }));
+		const [summary, trackingOut] = await Promise.all([
+			this.git.branchLocal(),
+			this.git.raw(['for-each-ref', `--format=%(refname:short)${FIELD_SEP}%(upstream:track)`, 'refs/heads']),
+		]);
+		const tracking = new Map<string, { ahead?: number; behind?: number }>();
+		for (const line of trackingOut.split('\n')) {
+			if (!line) {
+				continue;
+			}
+			const [name, track] = line.split(FIELD_SEP);
+			const ahead = Number(track.match(/ahead (\d+)/)?.[1]);
+			const behind = Number(track.match(/behind (\d+)/)?.[1]);
+			tracking.set(name, {
+				ahead: ahead > 0 ? ahead : undefined,
+				behind: behind > 0 ? behind : undefined,
+			});
+		}
+		return summary.all.map(name => ({ name, isHead: name === summary.current, ...tracking.get(name) }));
 	}
 
 	async listRemoteBranches(remote = 'origin'): Promise<RemoteBranchInfo[]> {
@@ -96,13 +113,23 @@ export class GitService {
 		}
 	}
 
+	/** Includes the branch's upstream too (if it has one) so commits it's behind on are still shown
+	 * — just tagged `onBranch: false` so the caller can dim them — rather than silently left out. */
 	async getLog(branchName: string): Promise<CommitInfo[]> {
-		const out = await this.git.raw(['log', branchName, `--pretty=format:${LOG_FORMAT}`, '--decorate=short', '--']);
+		const upstream = await this.getUpstreamBranch(branchName);
+		const refs = upstream ? [branchName, upstream] : [branchName];
+
+		const [out, branchHashesOut] = await Promise.all([
+			this.git.raw(['log', ...refs, `--pretty=format:${LOG_FORMAT}`, '--decorate=short', '--']),
+			this.git.raw(['rev-list', branchName]),
+		]);
+		const branchHashes = new Set(branchHashesOut.split('\n').filter(Boolean));
+
 		if (!out.trim()) {
 			return [];
 		}
 		return out.split('\n').map(line => {
-			const [hash, parents, authorName, authorEmail, date, message, refs] = line.split(FIELD_SEP);
+			const [hash, parents, authorName, authorEmail, date, message, refsField] = line.split(FIELD_SEP);
 			return {
 				hash,
 				parentHashes: parents ? parents.split(' ').filter(Boolean) : [],
@@ -110,7 +137,8 @@ export class GitService {
 				authorEmail,
 				date,
 				message,
-				refs: parseRefs(refs ?? ''),
+				refs: parseRefs(refsField ?? ''),
+				onBranch: branchHashes.has(hash),
 			};
 		});
 	}
@@ -119,6 +147,26 @@ export class GitService {
 	async getDiffBase(sha: string): Promise<string> {
 		const revList = (await this.git.raw(['rev-list', '--parents', '-n', '1', sha])).trim().split(' ');
 		return revList.length > 1 ? revList[1] : EMPTY_TREE_SHA;
+	}
+
+	/** Moves the current branch's HEAD to `sha`. "mixed" (git's default) unstages everything but
+	 * leaves the working tree files alone; "hard" also overwrites the working tree, discarding
+	 * uncommitted changes. Either way, commits after `sha` stop being part of this branch (though
+	 * they remain recoverable via the reflog for a while). */
+	async resetHead(sha: string, mode: 'mixed' | 'hard'): Promise<void> {
+		await this.git.raw(['reset', `--${mode}`, sha]);
+	}
+
+	/** Replays `sha`'s changes as a new commit on top of the current branch. Throws (with git's own
+	 * conflict message) if it can't apply cleanly — there's no in-extension conflict resolution, so
+	 * that has to be sorted out in the terminal. */
+	async cherryPick(sha: string): Promise<void> {
+		await this.git.raw(['cherry-pick', sha]);
+	}
+
+	/** A single-commit patch in the standard git-am-able format (commit message, author, date included). */
+	async getPatch(sha: string): Promise<string> {
+		return this.git.raw(['format-patch', '-1', sha, '--stdout']);
 	}
 
 	async getCommitFiles(sha: string): Promise<ChangedFile[]> {
@@ -150,6 +198,47 @@ export class GitService {
 		return this.git.show([`${sha}:${relPath}`]);
 	}
 
+	/** A stash entry is itself a regular commit, so getCommitFiles/getFileContentAtRevision/
+	 * openDiffForFile all already work against `stash.hash` unchanged — nothing stash-specific
+	 * needed there. */
+	async listStashes(): Promise<StashInfo[]> {
+		const out = await this.git.raw(['stash', 'list', `--pretty=format:${STASH_FORMAT}`]);
+		if (!out.trim()) {
+			return [];
+		}
+		return out.split('\n').map(line => {
+			const [ref, hash, message, date] = line.split(FIELD_SEP);
+			return { ref, hash, message, date };
+		});
+	}
+
+	async applyStash(ref: string): Promise<void> {
+		await this.git.raw(['stash', 'apply', ref]);
+	}
+
+	async dropStash(ref: string): Promise<void> {
+		await this.git.raw(['stash', 'drop', ref]);
+	}
+
+	/** getCommitFiles(stash.hash) alone only covers a stash's tracked-changes diff (its first
+	 * parent) — a stash created with --include-untracked stores those files in a separate,
+	 * parentless 3rd-parent commit that a normal base..stash diff never looks at. This merges both
+	 * in, tagging the untracked-side entries with sourceRef so openDiffForFile knows to diff them
+	 * against that commit instead of the stash's own hash. Verified against real git behavior:
+	 * `git status` comes back clean after stashing an untracked file, and `stash apply` restores it
+	 * correctly — the file was never actually missing from the stash, only from this file list. */
+	async getStashFiles(stashHash: string): Promise<ChangedFile[]> {
+		const trackedFiles = await this.getCommitFiles(stashHash);
+		let untrackedRef: string;
+		try {
+			untrackedRef = (await this.git.raw(['rev-parse', `${stashHash}^3`])).trim();
+		} catch {
+			return trackedFiles;
+		}
+		const untrackedFiles = await this.getCommitFiles(untrackedRef);
+		return [...trackedFiles, ...untrackedFiles.map(f => ({ ...f, sourceRef: untrackedRef }))];
+	}
+
 	async stageFile(relPath: string): Promise<void> {
 		await this.git.raw(['add', '--', relPath]);
 	}
@@ -159,10 +248,19 @@ export class GitService {
 	}
 
 	/** Reverts a file to its last-committed (HEAD) state, in both the index and the working tree —
-	 * this is what "discard local changes" means here. Only valid for a path that exists at HEAD;
-	 * never call this for a new/untracked file (nothing to revert to). */
+	 * this is what "discard local changes" means for a file that exists at HEAD. For a deleted file
+	 * this recreates it (a "restore"); for a modified one it throws away the edits. Not valid for a
+	 * new/untracked file — use discardNewFile for that. */
 	async discardChanges(relPath: string): Promise<void> {
 		await this.git.raw(['checkout', 'HEAD', '--', relPath]);
+	}
+
+	/** A new/untracked file has no committed state to revert to, so "discarding" it means deleting it
+	 * outright. Unstages first (harmless no-op if it wasn't staged) since `git clean` only touches
+	 * untracked paths, not ones still sitting in the index. */
+	async discardNewFile(relPath: string): Promise<void> {
+		await this.git.raw(['reset', '--', relPath]);
+		await this.git.raw(['clean', '-f', '--', relPath]);
 	}
 
 	async stageAll(): Promise<void> {
@@ -174,13 +272,22 @@ export class GitService {
 	}
 
 	/** Stashes every working-tree change, tracked or not. */
-	async stashAll(): Promise<void> {
-		await this.git.raw(['stash', 'push', '--include-untracked']);
+	async stashAll(message?: string): Promise<void> {
+		const args = ['stash', 'push', '--include-untracked'];
+		if (message) {
+			args.push('-m', message);
+		}
+		await this.git.raw(args);
 	}
 
 	/** Stashes only the given paths, leaving the rest of the working tree untouched. */
-	async stashPaths(relPaths: string[]): Promise<void> {
-		await this.git.raw(['stash', 'push', '--include-untracked', '--', ...relPaths]);
+	async stashPaths(relPaths: string[], message?: string): Promise<void> {
+		const args = ['stash', 'push', '--include-untracked'];
+		if (message) {
+			args.push('-m', message);
+		}
+		args.push('--', ...relPaths);
+		await this.git.raw(args);
 	}
 
 	/** Combined staged + unstaged working-tree changes, one entry per file. */

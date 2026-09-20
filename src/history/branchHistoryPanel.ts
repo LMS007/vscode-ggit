@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { openDiffForFile } from '../diff/openDiff';
+import { resetHeadToCommit } from '../git/gitActions';
 import { GitService } from '../git/gitService';
 import { HostMessage, WebviewMessage } from './protocol';
 
@@ -111,7 +112,42 @@ export class BranchHistoryPanel {
 			case 'runAction':
 				void vscode.commands.executeCommand(msg.command);
 				break;
+			case 'resetHead':
+				try {
+					await resetHeadToCommit(this.gitService, msg.sha, msg.mode);
+				} catch (err) {
+					vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				}
+				break;
+			case 'cherryPick':
+				try {
+					await this.gitService.cherryPick(msg.sha);
+				} catch (err) {
+					vscode.window.showErrorMessage(`GGit: Cherry-pick failed: ${(err as Error).message}`);
+				}
+				break;
+			case 'savePatch':
+				try {
+					await this.saveCommitPatch(msg.sha, msg.subject);
+				} catch (err) {
+					vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				}
+				break;
 		}
+	}
+
+	private async saveCommitPatch(sha: string, subject: string): Promise<void> {
+		const patch = await this.gitService.getPatch(sha);
+		const filename = `${sha.slice(0, 7)}-${sanitizeFilename(subject)}.patch`;
+		const uri = await vscode.window.showSaveDialog({
+			defaultUri: vscode.Uri.joinPath(vscode.Uri.file(this.gitService.repoRoot), filename),
+			filters: { 'Patch files': ['patch'] },
+		});
+		if (!uri) {
+			return;
+		}
+		await vscode.workspace.fs.writeFile(uri, Buffer.from(patch, 'utf8'));
+		void vscode.window.showInformationMessage(`GGit: Patch saved to ${uri.fsPath}`);
 	}
 
 	private post(message: HostMessage): void {
@@ -238,6 +274,11 @@ export class BranchHistoryPanel {
 		.commit-row-wrapper {
 			display: flex;
 			align-items: stretch;
+		}
+		/* A commit that's on the branch's upstream but not the branch itself yet (i.e. "behind") —
+		 * still shown, still fully clickable/selectable, just visually muted like Tower does. */
+		.commit-row-wrapper.not-on-branch {
+			opacity: 0.5;
 		}
 		.commit-graph {
 			flex: 0 0 24px;
@@ -396,6 +437,36 @@ export class BranchHistoryPanel {
 			color: var(--vscode-descriptionForeground);
 			font-style: italic;
 		}
+		.context-menu {
+			position: fixed;
+			z-index: 1000;
+			min-width: 220px;
+			background-color: var(--vscode-menu-background, #252526);
+			color: var(--vscode-menu-foreground, #cccccc);
+			border: 1px solid var(--vscode-menu-border, transparent);
+			border-radius: 4px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+			padding: 4px 0;
+		}
+		.context-menu[hidden] { display: none; }
+		.context-menu-item {
+			padding: 4px 16px;
+			cursor: pointer;
+			white-space: nowrap;
+		}
+		.context-menu-item:hover {
+			background-color: var(--vscode-menu-selectionBackground, #04395e);
+			color: var(--vscode-menu-selectionForeground, #ffffff);
+		}
+		.context-menu-item.danger:hover {
+			background-color: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+			color: var(--vscode-errorForeground, #f48771);
+		}
+		.context-menu-separator {
+			height: 1px;
+			margin: 4px 0;
+			background-color: var(--vscode-menu-separatorBackground, rgba(255, 255, 255, 0.1));
+		}
 	</style>
 </head>
 <body>
@@ -404,6 +475,14 @@ export class BranchHistoryPanel {
 		<div id="commits" class="pane"><div class="empty">Loading commits…</div></div>
 		<div id="splitter"></div>
 		<div id="files" class="pane"><div class="empty">Select a commit to see its changed files.</div></div>
+	</div>
+	<div id="commitContextMenu" class="context-menu" hidden>
+		<div class="context-menu-item" data-action="resetMixed">Reset Branch to Here (Mixed)</div>
+		<div class="context-menu-item danger" data-action="resetHard">Reset Branch to Here (Hard)</div>
+		<div class="context-menu-separator"></div>
+		<div class="context-menu-item" data-action="cherryPick">Cherry-Pick Commit</div>
+		<div class="context-menu-separator"></div>
+		<div class="context-menu-item" data-action="savePatch">Save Patch…</div>
 	</div>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -418,4 +497,14 @@ function getNonce(): string {
 		text += chars.charAt(Math.floor(Math.random() * chars.length));
 	}
 	return text;
+}
+
+function sanitizeFilename(subject: string): string {
+	const slug = subject
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '')
+		.slice(0, 50);
+	return slug || 'commit';
 }

@@ -10,4 +10,7 @@ export type WebviewMessage =
 	| { type: 'selectCommit'; sha: string }
 	| { type: 'openDiff'; sha: string; file: ChangedFile }
 	| { type: 'setSplit'; commitsPercent: number }
-	| { type: 'runAction'; command: string };
+	| { type: 'runAction'; command: string }
+	| { type: 'resetHead'; sha: string; mode: 'mixed' | 'hard' }
+	| { type: 'cherryPick'; sha: string }
+	| { type: 'savePatch'; sha: string; subject: string };

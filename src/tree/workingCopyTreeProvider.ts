@@ -34,12 +34,7 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		item.resourceUri = toWorkingChangeUri(file.path, file.status);
 		item.checkboxState =
 			file.state === 'staged' ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
-		// Also encodes discardability (new/untracked files have nothing to revert to) — ggit.discardChanges's
-		// `enablement` greys itself out based on this (see package.json). Only evaluated against whichever
-		// row you actually right-click, not the whole multi-selection — see the command handler for how
-		// that's still handled correctly when other selected files differ.
-		const discardable = file.status !== 'A' && file.status !== '?';
-		item.contextValue = `workingChange-${file.state}-${discardable ? 'discardable' : 'new'}`;
+		item.contextValue = file.state === 'staged' ? 'workingChangeStaged' : 'workingChangeUnstaged';
 		item.tooltip = `${file.path} (${file.state})`;
 		item.command = {
 			command: 'ggit.openWorkingChangeDiff',
