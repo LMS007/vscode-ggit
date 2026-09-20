@@ -3,8 +3,6 @@ import type { HostMessage, WebviewMessage } from '../protocol';
 
 declare function acquireVsCodeApi(): {
 	postMessage(message: WebviewMessage): void;
-	getState(): unknown;
-	setState(state: unknown): void;
 };
 
 const vscodeApi = acquireVsCodeApi();
@@ -13,10 +11,20 @@ const layoutEl = document.getElementById('layout')!;
 const commitsEl = document.getElementById('commits')!;
 const filesEl = document.getElementById('files')!;
 const splitterEl = document.getElementById('splitter')!;
+const toolbarEl = document.getElementById('toolbar')!;
+
+toolbarEl.addEventListener('click', event => {
+	const btn = (event.target as HTMLElement).closest<HTMLElement>('.toolbar-btn[data-command]');
+	if (btn) {
+		vscodeApi.postMessage({ type: 'runAction', command: btn.dataset.command! });
+	}
+});
 
 let currentFiles: ChangedFile[] = [];
 let currentCommits: CommitInfo[] = [];
 let selectedSha: string | undefined;
+let selectedFileIndex = -1;
+let activePane: 'commits' | 'files' = 'commits';
 
 function escapeHtml(text: string): string {
 	return text
@@ -84,6 +92,7 @@ function renderFileStats(f: ChangedFile): string {
 
 function renderFiles(files: ChangedFile[]): void {
 	currentFiles = files;
+	selectedFileIndex = -1;
 	if (files.length === 0) {
 		filesEl.innerHTML = '<div class="empty">No file changes in this commit.</div>';
 		return;
@@ -108,6 +117,7 @@ function selectCommit(sha: string): void {
 }
 
 commitsEl.addEventListener('click', event => {
+	activePane = 'commits';
 	const row = (event.target as HTMLElement).closest<HTMLElement>('.row[data-sha]');
 	if (row) {
 		selectCommit(row.dataset.sha!);
@@ -131,20 +141,51 @@ function selectCommitByOffset(offset: number): void {
 	commitsEl.querySelector<HTMLElement>(`.row[data-sha="${next.hash}"]`)?.scrollIntoView({ block: 'nearest' });
 }
 
+function selectFile(index: number): void {
+	if (!selectedSha) {
+		return;
+	}
+	selectedFileIndex = index;
+	filesEl.querySelectorAll('.row').forEach(row => {
+		row.classList.toggle('selected', Number((row as HTMLElement).dataset.index) === index);
+	});
+	const file = currentFiles[index];
+	vscodeApi.postMessage({ type: 'openDiff', sha: selectedSha, file });
+}
+
+function selectFileByOffset(offset: number): void {
+	if (currentFiles.length === 0) {
+		return;
+	}
+	const nextIndex = Math.min(
+		currentFiles.length - 1,
+		Math.max(0, (selectedFileIndex === -1 ? 0 : selectedFileIndex) + offset)
+	);
+	if (nextIndex === selectedFileIndex) {
+		return;
+	}
+	selectFile(nextIndex);
+	filesEl.querySelector<HTMLElement>(`.row[data-index="${nextIndex}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+
 window.addEventListener('keydown', event => {
-	if (event.key === 'ArrowDown') {
-		event.preventDefault();
-		selectCommitByOffset(1);
-	} else if (event.key === 'ArrowUp') {
-		event.preventDefault();
-		selectCommitByOffset(-1);
+	if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+		return;
+	}
+	event.preventDefault();
+	const offset = event.key === 'ArrowDown' ? 1 : -1;
+	if (activePane === 'commits') {
+		selectCommitByOffset(offset);
+	} else {
+		selectFileByOffset(offset);
 	}
 });
 
 filesEl.addEventListener('click', event => {
+	activePane = 'files';
 	const row = (event.target as HTMLElement).closest<HTMLElement>('.row[data-index]');
-	if (row && selectedSha) {
-		vscodeApi.postMessage({ type: 'openDiff', sha: selectedSha, files: currentFiles });
+	if (row) {
+		selectFile(Number(row.dataset.index));
 	}
 });
 
@@ -178,8 +219,8 @@ function applySplit(commitsPercent: number): void {
 }
 
 function restoreSplit(): void {
-	const state = vscodeApi.getState() as { commitsPercent?: number } | undefined;
-	applySplit(state?.commitsPercent ?? 60);
+	const initial = Number(layoutEl.dataset.initialSplit);
+	applySplit(Number.isFinite(initial) ? initial : 60);
 }
 
 splitterEl.addEventListener('pointerdown', event => {
@@ -209,7 +250,7 @@ function endDrag(): void {
 	document.body.style.userSelect = '';
 	const rect = layoutEl.getBoundingClientRect();
 	const commitsPercent = (commitsEl.getBoundingClientRect().width / rect.width) * 100;
-	vscodeApi.setState({ commitsPercent });
+	vscodeApi.postMessage({ type: 'setSplit', commitsPercent });
 }
 
 splitterEl.addEventListener('pointerup', endDrag);

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GitService } from '../git/gitService';
+import { GitService, stripRemotePrefix } from '../git/gitService';
 import { RemoteBranchInfo } from '../git/types';
 import { BranchTreeNode, buildBranchTree, sortTree } from './branchTree';
 
@@ -31,12 +31,11 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 		const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.None);
 		item.iconPath = new vscode.ThemeIcon('cloud');
 		item.contextValue = 'remoteBranch';
+		item.command = {
+			command: 'ggit.remoteBranchClicked',
+			title: 'Check Out Remote Branch',
+			arguments: [node.item.name],
+		};
 		return item;
 	}
-}
-
-/** Remote branch names include the remote prefix (e.g. "origin/alice/feature-x"); drop it before grouping since the Remotes view already implies the remote. */
-function stripRemotePrefix(name: string): string {
-	const idx = name.indexOf('/');
-	return idx === -1 ? name : name.slice(idx + 1);
 }

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { GitService } from '../git/gitService';
 import { BranchInfo } from '../git/types';
+import { toBranchUri } from './activeBranchDecoration';
 import { BranchTreeNode, buildBranchTree, sortTree } from './branchTree';
 
 const PINNED_BRANCHES = ['main', 'master'];
@@ -26,7 +27,12 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 	getTreeItem(node: BranchTreeNode<BranchInfo>): vscode.TreeItem {
 		if (node.kind === 'folder') {
 			const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.Collapsed);
-			item.iconPath = new vscode.ThemeIcon('folder');
+			item.iconPath = containsActiveBranch(node)
+				? {
+						light: vscode.Uri.joinPath(this.extensionUri, 'media', 'folder-green-light.svg'),
+						dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'folder-green-dark.svg'),
+					}
+				: new vscode.ThemeIcon('folder');
 			item.contextValue = 'branchFolder';
 			return item;
 		}
@@ -41,13 +47,25 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 					dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'target-green-dark.svg'),
 				}
 			: new vscode.ThemeIcon('git-branch');
-		item.description = branch.isHead ? 'current' : undefined;
-		item.contextValue = 'branch';
+		item.resourceUri = toBranchUri(branch.name);
+		item.description = branch.isHead ? 'HEAD' : undefined;
+		// "-head" vs "-normal" lets ggit.deleteLocalBranch's `enablement` grey itself out for the
+		// checked-out branch (see package.json) — git itself refuses to delete it anyway, but a
+		// disabled menu entry says so up front instead of via an error after clicking.
+		item.contextValue = branch.isHead ? 'branch-head' : 'branch-normal';
 		item.command = {
-			command: 'ggit.openBranchHistory',
-			title: 'Open History',
+			command: 'ggit.branchClicked',
+			title: 'Open History / Switch Branch',
 			arguments: [branch.name],
 		};
 		return item;
 	}
+}
+
+/** Whether the current HEAD branch lives anywhere under this folder — used to color it green. */
+function containsActiveBranch(node: BranchTreeNode<BranchInfo>): boolean {
+	if (node.kind === 'leaf') {
+		return node.item.isHead;
+	}
+	return node.children.some(containsActiveBranch);
 }

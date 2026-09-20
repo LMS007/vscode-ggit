@@ -8,4 +8,6 @@ export type HostMessage =
 export type WebviewMessage =
 	| { type: 'ready' }
 	| { type: 'selectCommit'; sha: string }
-	| { type: 'openDiff'; sha: string; files: ChangedFile[] };
+	| { type: 'openDiff'; sha: string; file: ChangedFile }
+	| { type: 'setSplit'; commitsPercent: number }
+	| { type: 'runAction'; command: string };

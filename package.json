@@ -27,12 +27,19 @@
     "views": {
       "ggit": [
         {
+          "id": "ggitWorkingCopy",
+          "name": "Working Copy",
+          "initialSize": 2
+        },
+        {
           "id": "ggitBranches",
-          "name": "Branches"
+          "name": "Branches",
+          "initialSize": 5
         },
         {
           "id": "ggitRemotes",
-          "name": "Remotes"
+          "name": "Remotes",
+          "initialSize": 3
         }
       ]
     },
@@ -40,6 +47,11 @@
       {
         "command": "ggit.openBranchHistory",
         "title": "GGit: Open Branch History"
+      },
+      {
+        "command": "ggit.createBranch",
+        "title": "GGit: Create Branch",
+        "icon": "$(add)"
       },
       {
         "command": "ggit.fetch",
@@ -52,32 +64,175 @@
         "icon": "$(arrow-down)"
       },
       {
+        "command": "ggit.push",
+        "title": "GGit: Push",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "ggit.sync",
+        "title": "GGit: Sync",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "ggit.rebase",
+        "title": "GGit: Rebase",
+        "icon": "$(git-merge)"
+      },
+      {
         "command": "ggit.refresh",
         "title": "GGit: Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "ggit.stageAll",
+        "title": "GGit: Stage All",
+        "icon": "$(add)"
+      },
+      {
+        "command": "ggit.unstageAll",
+        "title": "GGit: Unstage All",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "ggit.stashAll",
+        "title": "GGit: Stash All Changes",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "ggit.applyStash",
+        "title": "GGit: Apply Stash",
+        "icon": "$(inbox)"
+      },
+      {
+        "command": "ggit.stashSelectedFiles",
+        "title": "GGit: Stash Selected Files"
+      },
+      {
+        "command": "ggit.openWorkingChangeFile",
+        "title": "GGit: Open File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "ggit.discardChanges",
+        "title": "GGit: Discard Local Changes",
+        "enablement": "viewItem =~ /discardable/"
+      },
+      {
+        "command": "ggit.createBranchFrom",
+        "title": "GGit: Create New Branch from Here"
+      },
+      {
+        "command": "ggit.deleteLocalBranch",
+        "title": "GGit: Delete Local Branch",
+        "enablement": "viewItem != 'branch-head'"
+      },
+      {
+        "command": "ggit.renameLocalBranch",
+        "title": "GGit: Rename Local Branch"
+      },
+      {
+        "command": "ggit.copyBranchName",
+        "title": "GGit: Copy Branch Name"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "ggit.fetch",
-          "when": "view == ggitRemotes",
+          "command": "ggit.createBranch",
+          "when": "view == ggitBranches",
           "group": "navigation@0"
         },
         {
-          "command": "ggit.pull",
-          "when": "view == ggitRemotes",
+          "command": "ggit.fetch",
+          "when": "view == ggitBranches",
           "group": "navigation@1"
         },
         {
-          "command": "ggit.refresh",
-          "when": "view == ggitRemotes",
+          "command": "ggit.pull",
+          "when": "view == ggitBranches",
           "group": "navigation@2"
+        },
+        {
+          "command": "ggit.push",
+          "when": "view == ggitBranches",
+          "group": "navigation@3"
+        },
+        {
+          "command": "ggit.sync",
+          "when": "view == ggitBranches",
+          "group": "navigation@4"
         },
         {
           "command": "ggit.refresh",
           "when": "view == ggitBranches",
+          "group": "navigation@5"
+        },
+        {
+          "command": "ggit.rebase",
+          "when": "view == ggitBranches",
+          "group": "navigation@6"
+        },
+        {
+          "command": "ggit.refresh",
+          "when": "view == ggitRemotes",
           "group": "navigation"
+        },
+        {
+          "command": "ggit.stageAll",
+          "when": "view == ggitWorkingCopy",
+          "group": "navigation@0"
+        },
+        {
+          "command": "ggit.unstageAll",
+          "when": "view == ggitWorkingCopy",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ggit.stashAll",
+          "when": "view == ggitWorkingCopy",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ggit.applyStash",
+          "when": "view == ggitWorkingCopy",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "ggit.stashSelectedFiles",
+          "when": "view == ggitWorkingCopy",
+          "group": "1_modification"
+        },
+        {
+          "command": "ggit.openWorkingChangeFile",
+          "when": "view == ggitWorkingCopy",
+          "group": "inline"
+        },
+        {
+          "command": "ggit.discardChanges",
+          "when": "view == ggitWorkingCopy",
+          "group": "2_discard"
+        },
+        {
+          "command": "ggit.createBranchFrom",
+          "when": "view == ggitBranches && viewItem =~ /^branch-/",
+          "group": "1_create@1"
+        },
+        {
+          "command": "ggit.renameLocalBranch",
+          "when": "view == ggitBranches && viewItem =~ /^branch-/",
+          "group": "2_modify@1"
+        },
+        {
+          "command": "ggit.copyBranchName",
+          "when": "view == ggitBranches && viewItem =~ /^branch-/",
+          "group": "2_modify@2"
+        },
+        {
+          "command": "ggit.deleteLocalBranch",
+          "when": "view == ggitBranches && viewItem =~ /^branch-/",
+          "group": "9_delete@1"
         }
       ]
     }
@@ -113,6 +268,7 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
+    "@vscode/codicons": "^0.0.46-24",
     "simple-git": "^3.36.0"
   }
 }

@@ -1,7 +1,22 @@
 import * as vscode from 'vscode';
-import { openDiffForCommit } from '../diff/openDiff';
+import { openDiffForFile } from '../diff/openDiff';
 import { GitService } from '../git/gitService';
 import { HostMessage, WebviewMessage } from './protocol';
+
+/** Shared across every History panel instance/reload — not scoped to a single webview session. */
+const SPLIT_STATE_KEY = 'ggit.historyPanel.commitsSplitPercent';
+
+/** Mirrors the Branches toolbar/sidebar Actions view — these always act on the currently checked-out
+ * branch, not necessarily the one this panel happens to be showing history for. */
+const TOOLBAR_BUTTONS: { command: string; icon: string; label: string }[] = [
+	{ command: 'ggit.createBranch', icon: 'add', label: 'Create Branch' },
+	{ command: 'ggit.fetch', icon: 'cloud-download', label: 'Fetch' },
+	{ command: 'ggit.pull', icon: 'arrow-down', label: 'Pull' },
+	{ command: 'ggit.push', icon: 'arrow-up', label: 'Push' },
+	{ command: 'ggit.sync', icon: 'sync', label: 'Sync' },
+	{ command: 'ggit.refresh', icon: 'refresh', label: 'Refresh' },
+	{ command: 'ggit.rebase', icon: 'git-merge', label: 'Rebase' },
+];
 
 export class BranchHistoryPanel {
 	private static current: BranchHistoryPanel | undefined;
@@ -11,16 +26,25 @@ export class BranchHistoryPanel {
 	private branchName: string;
 	private ready = false;
 
-	private constructor(context: vscode.ExtensionContext, private readonly gitService: GitService, branchName: string) {
+	private constructor(
+		private readonly context: vscode.ExtensionContext,
+		private readonly gitService: GitService,
+		branchName: string
+	) {
 		this.branchName = branchName;
 		this.panel = vscode.window.createWebviewPanel(
 			'ggitBranchHistory',
 			`History: ${branchName}`,
-			vscode.ViewColumn.Active,
+			// preserveFocus: true — opening this from a tree-item click shouldn't steal focus
+			// away from the tree, or arrow-key navigation there breaks immediately after a click.
+			{ viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
 			{
 				enableScripts: true,
 				retainContextWhenHidden: true,
-				localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')],
+				localResourceRoots: [
+					vscode.Uri.joinPath(context.extensionUri, 'dist'),
+					vscode.Uri.joinPath(context.extensionUri, 'node_modules', '@vscode/codicons', 'dist'),
+				],
 			}
 		);
 		this.panel.webview.html = this.getHtml(context);
@@ -44,7 +68,7 @@ export class BranchHistoryPanel {
 	private showBranch(branchName: string): void {
 		this.branchName = branchName;
 		this.panel.title = `History: ${branchName}`;
-		this.panel.reveal(vscode.ViewColumn.Active);
+		this.panel.reveal(vscode.ViewColumn.Active, true);
 		void this.loadCommits();
 	}
 
@@ -76,10 +100,16 @@ export class BranchHistoryPanel {
 				break;
 			case 'openDiff':
 				try {
-					await openDiffForCommit(this.gitService, msg.sha, msg.files);
+					await openDiffForFile(this.gitService, msg.sha, msg.file);
 				} catch (err) {
 					vscode.window.showErrorMessage(`Failed to open diff: ${(err as Error).message}`);
 				}
+				break;
+			case 'setSplit':
+				void this.context.globalState.update(SPLIT_STATE_KEY, msg.commitsPercent);
+				break;
+			case 'runAction':
+				void vscode.commands.executeCommand(msg.command);
 				break;
 		}
 	}
@@ -98,14 +128,24 @@ export class BranchHistoryPanel {
 	private getHtml(context: vscode.ExtensionContext): string {
 		const webview = this.panel.webview;
 		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview.js'));
+		const codiconCssUri = webview.asWebviewUri(
+			vscode.Uri.joinPath(context.extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css')
+		);
 		const nonce = getNonce();
+		const initialSplitPercent = context.globalState.get<number>(SPLIT_STATE_KEY, 60);
+		const toolbarButtons = TOOLBAR_BUTTONS.map(
+			b =>
+				`<button class="toolbar-btn" data-command="${b.command}" title="${b.label}" aria-label="${b.label}">` +
+				`<span class="codicon codicon-${b.icon}"></span><span class="toolbar-btn-label">${b.label}</span></button>`
+		).join('');
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
 	<title>Branch History</title>
+	<link href="${codiconCssUri}" rel="stylesheet" />
 	<style>
 		html, body {
 			height: 100%;
@@ -116,9 +156,46 @@ export class BranchHistoryPanel {
 			font-family: var(--vscode-font-family);
 			font-size: var(--vscode-font-size);
 		}
+		body {
+			display: flex;
+			flex-direction: column;
+		}
+		#toolbar {
+			flex: 0 0 auto;
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+			padding: 6px 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+		.toolbar-btn {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			height: 28px;
+			padding: 0 10px;
+			border: 1px solid rgba(200, 200, 200, 0.4);
+			border-radius: 4px;
+			background: transparent;
+			color: var(--vscode-icon-foreground, var(--vscode-foreground));
+			font-family: inherit;
+			font-size: inherit;
+			cursor: pointer;
+		}
+		.toolbar-btn:hover {
+			border-color: rgba(200, 200, 200, 0.85);
+			background-color: var(--vscode-toolbar-hoverBackground);
+		}
+		.toolbar-btn .codicon {
+			font-size: 16px;
+		}
+		.toolbar-btn-label {
+			white-space: nowrap;
+		}
 		#layout {
 			display: flex;
-			height: 100vh;
+			flex: 1 1 auto;
+			min-height: 0;
 			box-sizing: border-box;
 		}
 		.pane {
@@ -272,6 +349,14 @@ export class BranchHistoryPanel {
 			background-color: var(--vscode-descriptionForeground, #8a8a8a);
 			color: var(--vscode-editor-background, #1e1e1e);
 		}
+		/* The selected row's background is the same blue as .ref-badge-local, so on its own the
+		 * local badge would vanish into the row. Lightening every badge (blending white over
+		 * whatever blue the row is) keeps them visible as distinct pills against it. */
+		.row.selected .ref-badge-local,
+		.row.selected .ref-badge-remote {
+			background-color: rgba(255, 255, 255, 0.25);
+			color: var(--vscode-badge-foreground, #ffffff);
+		}
 		.ref-badge-tag {
 			background-color: var(--vscode-gitDecoration-addedResourceForeground, #4b4);
 			color: var(--vscode-editor-background, #1e1e1e);
@@ -314,7 +399,8 @@ export class BranchHistoryPanel {
 	</style>
 </head>
 <body>
-	<div id="layout">
+	<div id="toolbar">${toolbarButtons}</div>
+	<div id="layout" data-initial-split="${initialSplitPercent}">
 		<div id="commits" class="pane"><div class="empty">Loading commits…</div></div>
 		<div id="splitter"></div>
 		<div id="files" class="pane"><div class="empty">Select a commit to see its changed files.</div></div>

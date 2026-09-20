@@ -24,7 +24,7 @@ export interface CommitInfo {
 	refs: RefBadge[];
 }
 
-export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T';
+export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | '?';
 
 export interface ChangedFile {
 	path: string;
@@ -33,4 +33,12 @@ export interface ChangedFile {
 	insertions?: number;
 	deletions?: number;
 	binary?: boolean;
+}
+
+export type WorkingChangeState = 'staged' | 'unstaged';
+
+export interface WorkingChangeFile {
+	path: string;
+	status: FileStatus;
+	state: WorkingChangeState;
 }

@@ -6,6 +6,9 @@ export const GGIT_SHOW_SCHEME = 'ggit-show';
 /** Sentinel ref meaning "this side of the diff doesn't exist" (added/deleted file). */
 export const EMPTY_REF = '__ggit_empty__';
 
+/** Sentinel ref meaning "the staged (index) copy of this file" — git's `:path` show syntax. */
+export const INDEX_REF = '__ggit_index__';
+
 export function toGGitShowUri(relPath: string, ref: string): vscode.Uri {
 	const normalized = relPath.startsWith('/') ? relPath : `/${relPath}`;
 	return vscode.Uri.from({
@@ -27,8 +30,9 @@ export class GGitShowContentProvider implements vscode.TextDocumentContentProvid
 			return '';
 		}
 		const relPath = uri.path.replace(/^\//, '');
+		const revision = ref === INDEX_REF ? '' : ref;
 		try {
-			return await this.gitService.getFileContentAtRevision(ref, relPath);
+			return await this.gitService.getFileContentAtRevision(revision, relPath);
 		} catch {
 			// Path didn't exist at this revision — treat as an empty side of the diff.
 			return '';

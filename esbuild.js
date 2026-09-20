@@ -62,11 +62,51 @@ async function main() {
 		],
 	});
 
+	// The commit-files companion panel is a second, independent webview (files list only,
+	// no commit browser), so it gets its own bundle rather than sharing the history one.
+	const commitFilesWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/history/commitFilesWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/commitFilesWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
+	// The create-branch form is a third, independent webview (a simple form, no commit browser),
+	// so it gets its own bundle rather than sharing the history one.
+	const createBranchWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/branch/createBranchWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/createBranchWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
+	const contexts = [extensionCtx, webviewCtx, commitFilesWebviewCtx, createBranchWebviewCtx];
+
 	if (watch) {
-		await Promise.all([extensionCtx.watch(), webviewCtx.watch()]);
+		await Promise.all(contexts.map(ctx => ctx.watch()));
 	} else {
-		await Promise.all([extensionCtx.rebuild(), webviewCtx.rebuild()]);
-		await Promise.all([extensionCtx.dispose(), webviewCtx.dispose()]);
+		await Promise.all(contexts.map(ctx => ctx.rebuild()));
+		await Promise.all(contexts.map(ctx => ctx.dispose()));
 	}
 }
 
