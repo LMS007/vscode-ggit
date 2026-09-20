@@ -30,8 +30,12 @@ This is a personal project, not published to the Marketplace. It's installed loc
 - Branches with `/` in their name are grouped into folders (e.g. `alice/feature-x`); the
   folder holding your current branch is highlighted and expands automatically
 - Ahead/behind counts shown as `↑N`/`↓N`
+- Green = checked out here. Blue = checked out in another `git worktree` on disk, with that
+  worktree's folder name shown alongside it — GGit refuses to check these out (same as git itself)
+  since a branch can only live in one worktree at a time
 - Right-click: Create New Branch from Here, Rename, Copy Branch Name, Delete (greyed out for the
-  checked-out branch; escalates to a force-delete confirmation only if git refuses a safe delete)
+  checked-out branch and for one checked out in another worktree; escalates to a force-delete
+  confirmation only if git refuses a safe delete)
 
 **Remotes** — browse and check out remote branches (also grouped into folders).
 
@@ -63,7 +67,9 @@ a branch switch when possible.
 
 ## Known limitations / not implemented yet
 
-- **No git worktrees** — no UI for creating, listing, or switching between `git worktree`s.
+- **No git worktree switching** — Branches is aware of other worktrees (blue branches, blocked
+  checkout — see above) but there's still no UI for creating one, listing them as a first-class
+  view, or switching Working Copy to a different one.
 - **Only one History tab** — opening a different branch's history reuses the same tab rather than
   letting you keep several branches' histories open side by side.
 - **No interactive rebase** — rebasing is always the plain, non-interactive kind; no

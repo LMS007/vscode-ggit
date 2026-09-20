@@ -170,7 +170,7 @@
       {
         "command": "ggit.deleteLocalBranch",
         "title": "Delete Local Branch",
-        "enablement": "viewItem != 'branch-head'"
+        "enablement": "viewItem != 'branch-head' && viewItem != 'branch-other-worktree'"
       },
       {
         "command": "ggit.renameLocalBranch",

@@ -5,6 +5,11 @@ export interface BranchInfo {
 	 * there's nothing to report, so callers don't need to check both "has an upstream" and "is 0". */
 	ahead?: number;
 	behind?: number;
+	/** Set when this branch is checked out in a worktree other than the one GGit is currently
+	 * running against — git refuses to check it out here while that's true. Undefined for the
+	 * current worktree's own branch (that's `isHead` instead) and for anything not checked out
+	 * anywhere. */
+	worktreePath?: string;
 }
 
 export interface RemoteBranchInfo {

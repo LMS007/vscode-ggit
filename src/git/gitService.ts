@@ -53,9 +53,10 @@ export class GitService {
 	}
 
 	async listLocalBranches(): Promise<BranchInfo[]> {
-		const [summary, trackingOut] = await Promise.all([
+		const [summary, trackingOut, worktreeOwners] = await Promise.all([
 			this.git.branchLocal(),
 			this.git.raw(['for-each-ref', `--format=%(refname:short)${FIELD_SEP}%(upstream:track)`, 'refs/heads']),
+			this.getBranchWorktreeOwners(),
 		]);
 		const tracking = new Map<string, { ahead?: number; behind?: number }>();
 		for (const line of trackingOut.split('\n')) {
@@ -70,7 +71,69 @@ export class GitService {
 				behind: behind > 0 ? behind : undefined,
 			});
 		}
-		return summary.all.map(name => ({ name, isHead: name === summary.current, ...tracking.get(name) }));
+		return summary.all.map(name => ({
+			name,
+			isHead: name === summary.current,
+			...tracking.get(name),
+			worktreePath: worktreeOwners.get(name),
+		}));
+	}
+
+	/** One entry per worktree `git worktree` knows about, including whichever one GGit itself is
+	 * running against. Parses `--porcelain` rather than the human-readable default, e.g.:
+	 *   worktree /home/user/code/app
+	 *   HEAD 1a2b3c4d...
+	 *   branch refs/heads/main
+	 * (a blank line separates entries; a detached-HEAD worktree has no `branch` line at all). */
+	async listWorktrees(): Promise<{ path: string; branch?: string; isCurrent: boolean }[]> {
+		const out = await this.git.raw(['worktree', 'list', '--porcelain']);
+		// git always reports the *real* (symlink-resolved) path here, e.g. macOS's /var -> /private/var
+		// — comparing against repoRoot with plain path.resolve looked right in isolation but silently
+		// never matched the current worktree on macOS, since repoRoot (from workspaceFolder.uri.fsPath)
+		// keeps the /var form. Verified by actually running `git worktree list --porcelain` from a repo
+		// under a tmp dir before trusting the plain-resolve comparison.
+		const realRepoRoot = safeRealpath(this.repoRoot);
+		const worktrees: { path: string; branch?: string; isCurrent: boolean }[] = [];
+		let currentPath: string | undefined;
+		let currentBranch: string | undefined;
+		const flush = () => {
+			if (currentPath) {
+				worktrees.push({
+					path: currentPath,
+					branch: currentBranch,
+					isCurrent: safeRealpath(currentPath) === realRepoRoot,
+				});
+			}
+			currentPath = undefined;
+			currentBranch = undefined;
+		};
+		for (const line of out.split('\n')) {
+			if (!line.trim()) {
+				flush();
+				continue;
+			}
+			if (line.startsWith('worktree ')) {
+				currentPath = line.slice('worktree '.length).trim();
+			} else if (line.startsWith('branch ')) {
+				currentBranch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+			}
+		}
+		flush();
+		return worktrees;
+	}
+
+	/** Maps branch name -> the path of the *other* worktree it's checked out in. Excludes whichever
+	 * worktree GGit is currently running against — that branch is already flagged via
+	 * BranchInfo.isHead, not this. */
+	private async getBranchWorktreeOwners(): Promise<Map<string, string>> {
+		const worktrees = await this.listWorktrees();
+		const owners = new Map<string, string>();
+		for (const wt of worktrees) {
+			if (wt.branch && !wt.isCurrent) {
+				owners.set(wt.branch, wt.path);
+			}
+		}
+		return owners;
 	}
 
 	async listRemoteBranches(remote = 'origin'): Promise<RemoteBranchInfo[]> {
@@ -88,7 +151,16 @@ export class GitService {
 		return name === 'HEAD' ? undefined : name;
 	}
 
+	/** Checked live (not from a cached branch list) because the whole point is to catch another
+	 * worktree grabbing this branch between the last refresh and this click — git itself would
+	 * refuse the checkout either way, but with a much less friendly "already used by worktree at
+	 * ..." error surfacing straight from the raw command. */
 	async checkoutBranch(name: string): Promise<void> {
+		const owners = await this.getBranchWorktreeOwners();
+		const ownerPath = owners.get(name);
+		if (ownerPath) {
+			throw new Error(`"${name}" is already checked out in another worktree at ${ownerPath} — open that worktree instead.`);
+		}
 		await this.git.checkout(name);
 	}
 
@@ -464,6 +536,18 @@ export class GitService {
 			throw new Error('Cannot pull: HEAD is detached (no current branch).');
 		}
 		await this.git.pull(remote, current);
+	}
+}
+
+/** Resolves symlinks before comparing worktree paths — git itself always reports fully-resolved
+ * paths from `worktree list`, so comparing against an unresolved path (e.g. one under macOS's
+ * /var, which is a symlink to /private/var) would otherwise never match. Falls back to a plain
+ * resolve if the path doesn't exist (e.g. a worktree directory deleted by hand, outside git). */
+function safeRealpath(p: string): string {
+	try {
+		return fs.realpathSync(p);
+	} catch {
+		return path.resolve(p);
 	}
 }
 

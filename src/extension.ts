@@ -55,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.executeCommand('ggit.commit')
 	);
 
-	const activeBranchDecorations = new ActiveBranchDecorationProvider(gitService);
+	const activeBranchDecorations = new ActiveBranchDecorationProvider();
 	const workingChangeDecorations = new WorkingChangeDecorationProvider();
 
 	const workingCopyView = vscode.window.createTreeView('ggitWorkingCopy', {
@@ -397,7 +397,15 @@ export function activate(context: vscode.ExtensionContext): void {
 			// in-progress rebase (conflicted or not) — watching them is what lets the Conflicts view
 			// and its `ggit.rebaseInProgress` context key react promptly to a rebase starting, pausing
 			// on a conflict, or finishing/aborting, including one driven from the integrated terminal.
-			'{HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**}'
+			// worktrees/** is git's per-linked-worktree admin dir — a subdirectory appears/disappears
+			// on `git worktree add`/`remove`, and each one's own HEAD file changes when that worktree
+			// switches branches, which is exactly the state Branches' blue/"checked out elsewhere"
+			// styling depends on. This only sees other worktrees because GGit's own workspace folder is
+			// always the *main* checkout today (no worktree-switching UI yet) — its .git is the real,
+			// shared git dir, not a per-worktree pointer file. If GGit ever opens from inside a linked
+			// worktree instead, this would need to watch the resolved git-common-dir rather than a
+			// hardcoded ".git" under the workspace folder.
+			'{HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}'
 		)
 	);
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;

@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { GitService } from '../git/gitService';
 import { BranchInfo } from '../git/types';
@@ -56,13 +57,22 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 					dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'target-green-dark.svg'),
 				}
 			: new vscode.ThemeIcon('git-branch');
-		item.resourceUri = toBranchUri(branch.name);
-		const descriptionParts = [branch.isHead ? 'HEAD' : undefined, formatTracking(branch)].filter(Boolean);
+		item.resourceUri = toBranchUri(branch.name, branch.isHead ? 'active' : branch.worktreePath ? 'checked-out-elsewhere' : 'none');
+		const descriptionParts = [
+			branch.isHead ? 'HEAD' : undefined,
+			formatTracking(branch),
+			branch.worktreePath ? path.basename(branch.worktreePath) : undefined,
+		].filter(Boolean);
 		item.description = descriptionParts.length > 0 ? descriptionParts.join(' ') : undefined;
-		// "-head" vs "-normal" lets ggit.deleteLocalBranch's `enablement` grey itself out for the
-		// checked-out branch (see package.json) — git itself refuses to delete it anyway, but a
-		// disabled menu entry says so up front instead of via an error after clicking.
-		item.contextValue = branch.isHead ? 'branch-head' : 'branch-normal';
+		if (branch.worktreePath) {
+			item.tooltip = `${branch.name} — checked out in another worktree at ${branch.worktreePath}`;
+		}
+		// "-head" / "-other-worktree" both let ggit.deleteLocalBranch's `enablement` grey itself out
+		// (see package.json) — git itself refuses either delete anyway, but a disabled menu entry says
+		// so up front instead of via an error after clicking. Checkout itself is separately guarded in
+		// GitService.checkoutBranch regardless of contextValue, using a live worktree lookup rather than
+		// whatever this tree happened to render last.
+		item.contextValue = branch.isHead ? 'branch-head' : branch.worktreePath ? 'branch-other-worktree' : 'branch-normal';
 		item.command = {
 			command: 'ggit.branchClicked',
 			title: 'Open History / Switch Branch',
