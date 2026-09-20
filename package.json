@@ -247,45 +247,30 @@
           "group": "navigation@2"
         },
         {
-          "command": "ggit.stageAll",
+          "command": "ggit.applyStash",
           "when": "view == ggitWorkingCopy",
           "group": "navigation@0"
         },
         {
-          "command": "ggit.unstageAll",
-          "when": "view == ggitWorkingCopy",
-          "group": "navigation@1"
-        },
-        {
-          "command": "ggit.commit",
-          "when": "view == ggitWorkingCopy",
-          "group": "navigation@2"
-        },
-        {
-          "command": "ggit.applyStash",
-          "when": "view == ggitWorkingCopy",
-          "group": "navigation@3"
-        },
-        {
           "command": "ggit.stashAll",
           "when": "view == ggitWorkingCopy",
-          "group": "navigation@4"
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
         {
           "command": "ggit.stashSelectedFiles",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
           "group": "1_modification"
         },
         {
           "command": "ggit.openWorkingChangeFile",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
           "group": "inline"
         },
         {
           "command": "ggit.discardChanges",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
           "group": "2_discard"
         },
         {

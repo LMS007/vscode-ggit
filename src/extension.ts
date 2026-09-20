@@ -29,7 +29,7 @@ import { ConflictsTreeProvider } from './tree/conflictsTreeProvider';
 import { RemotesTreeProvider } from './tree/remotesTreeProvider';
 import { StashesTreeProvider } from './tree/stashesTreeProvider';
 import { WorkingChangeDecorationProvider } from './tree/workingChangeDecoration';
-import { WorkingCopyTreeProvider } from './tree/workingCopyTreeProvider';
+import { isCreateCommitNode, isWorkingChangeFile, WorkingCopyTreeProvider } from './tree/workingCopyTreeProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
 	const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -62,6 +62,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		treeDataProvider: workingCopyProvider,
 		canSelectMany: true,
 	});
+
+	const branchesView = vscode.window.createTreeView('ggitBranches', { treeDataProvider: branchesProvider });
+	// The workspace folder name, mirroring how Working Copy's description shows the active branch —
+	// static for now since GGit only ever looks at a single workspace folder (see the worktree
+	// discussion: there's no "switch worktree" yet, so this never needs to change mid-session).
+	branchesView.description = workspaceFolder.name;
 
 	// Mirrors the built-in Source Control icon's badge — VS Code aggregates a view's `badge` up onto
 	// its container's activity-bar icon automatically, so setting this on just the Working Copy view
@@ -109,12 +115,22 @@ export function activate(context: vscode.ExtensionContext): void {
 	const isRemoteBranchDoubleClick = createDoubleClickGuard();
 
 	workingCopyView.onDidChangeCheckboxState(async e => {
-		for (const [file, state] of e.items) {
+		for (const [node, state] of e.items) {
 			try {
-				if (state === vscode.TreeItemCheckboxState.Checked) {
-					await gitService.stageFile(file.path);
-				} else {
-					await gitService.unstageFile(file.path);
+				if (isCreateCommitNode(node)) {
+					// The pinned row's checkbox is a check-all/uncheck-all for staging, not a
+					// per-file toggle.
+					if (state === vscode.TreeItemCheckboxState.Checked) {
+						await gitService.stageAll();
+					} else {
+						await gitService.unstageAll();
+					}
+				} else if (isWorkingChangeFile(node)) {
+					if (state === vscode.TreeItemCheckboxState.Checked) {
+						await gitService.stageFile(node.path);
+					} else {
+						await gitService.unstageFile(node.path);
+					}
 				}
 			} catch (err) {
 				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
@@ -128,7 +144,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	context.subscriptions.push(
 		workingCopyView,
-		vscode.window.createTreeView('ggitBranches', { treeDataProvider: branchesProvider }),
+		branchesView,
 		vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider }),
 		vscode.window.createTreeView('ggitConflicts', { treeDataProvider: conflictsProvider, canSelectMany: true }),
 		vscode.window.registerWebviewViewProvider('ggitCommitLauncher', commitLauncherProvider),
@@ -261,7 +277,10 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand(
 			'ggit.stashSelectedFiles',
 			(file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
-				const files = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
+				// selectedFiles can include the pinned Create Commit row when it's part of a multi-select
+				// that also includes the right-clicked file — filtered out since it isn't a real file.
+				const files =
+					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
 				return runGitOperation(
 					`Stashing ${files.length} file${files.length === 1 ? '' : 's'}…`,
 					() => stashPathsWithMessage(gitService, files.map(f => f.path)),
@@ -282,7 +301,8 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand(
 			'ggit.discardChanges',
 			(file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
-				const files = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
+				const files =
+					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
 				return runGitOperation(
 					`Discarding ${files.length} file${files.length === 1 ? '' : 's'}…`,
 					() => discardWorkingChanges(gitService, files),

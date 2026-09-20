@@ -9,6 +9,14 @@ export function toWorkingChangeUri(filePath: string, status: FileStatus): vscode
 	return vscode.Uri.from({ scheme: GGIT_WORKING_CHANGE_SCHEME, path: `/${filePath}`, query: status });
 }
 
+/** Not a real file status — a distinct query value so the same decoration provider can also color
+ * the synthetic "Create Commit" row's label text, the same way it colors real files by status. */
+const CREATE_COMMIT_MARKER = '__create_commit__';
+
+export function toCreateCommitUri(): vscode.Uri {
+	return vscode.Uri.from({ scheme: GGIT_WORKING_CHANGE_SCHEME, path: '/__create_commit__', query: CREATE_COMMIT_MARKER });
+}
+
 const STATUS_COLOR_TOKENS: Record<FileStatus, string> = {
 	A: 'gitDecoration.addedResourceForeground',
 	M: 'gitDecoration.modifiedResourceForeground',
@@ -31,6 +39,10 @@ export class WorkingChangeDecorationProvider implements vscode.FileDecorationPro
 	provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
 		if (uri.scheme !== GGIT_WORKING_CHANGE_SCHEME) {
 			return undefined;
+		}
+		if (uri.query === CREATE_COMMIT_MARKER) {
+			// Same link-blue VS Code itself uses for clickable text — no real file status to badge.
+			return { color: new vscode.ThemeColor('textLink.foreground') };
 		}
 		const status = uri.query as FileStatus;
 		return {
