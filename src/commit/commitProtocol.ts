@@ -30,4 +30,8 @@ export type CommitWebviewMessage =
 	| { type: 'ready' }
 	| { type: 'commit'; subject: string; body: string; amend: boolean }
 	| { type: 'setStaged'; path: string; staged: boolean }
-	| { type: 'setAllStaged'; staged: boolean };
+	| { type: 'setAllStaged'; staged: boolean }
+	/** Persists whatever's currently in the subject/body fields via context.globalState, so an
+	 * in-progress message survives not just switching away and back (retainContextWhenHidden already
+	 * covers that) but also fully closing and reopening the Commit panel, or reloading the window. */
+	| { type: 'draftChanged'; subject: string; body: string };

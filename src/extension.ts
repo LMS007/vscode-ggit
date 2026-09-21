@@ -356,13 +356,65 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		),
 
+		// Three granularities, mirroring Tower's own "Ignore" submenu: the exact path, the bare
+		// filename (a gitignore pattern with no "/" matches that name at any depth, not just here), or
+		// the extension (a "*.ext" pattern, also unanchored).
 		vscode.commands.registerCommand(
-			'ggit.addToGitignore',
+			'ggit.ignoreThisItem',
 			async (file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
 				const files =
 					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
 				try {
 					await addPathsToGitignore(gitService, files.map(f => f.path));
+					refreshAll();
+				} catch (err) {
+					vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				}
+			}
+		),
+
+		vscode.commands.registerCommand(
+			'ggit.ignoreByName',
+			async (file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
+				const files =
+					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
+				try {
+					await addPathsToGitignore(gitService, files.map(f => path.basename(f.path)));
+					refreshAll();
+				} catch (err) {
+					vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				}
+			}
+		),
+
+		vscode.commands.registerCommand(
+			'ggit.ignoreByType',
+			async (file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
+				const files =
+					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
+				const patterns = new Set<string>();
+				let anyWithoutExtension = false;
+				for (const f of files) {
+					const ext = path.extname(f.path);
+					if (ext) {
+						patterns.add(`*${ext}`);
+					} else {
+						anyWithoutExtension = true;
+					}
+				}
+				if (patterns.size === 0) {
+					// Never fall through to an empty pattern set -- that would silently no-op addPathsToGitignore,
+					// but a blind "*" (extname of a file with no dot) would instead ignore the entire repo.
+					void vscode.window.showInformationMessage(
+						`GGit: ${files.length === 1 ? 'This file has' : 'None of these files have'} an extension to ignore by type.`
+					);
+					return;
+				}
+				if (anyWithoutExtension) {
+					void vscode.window.showInformationMessage('GGit: Skipped one or more files with no extension.');
+				}
+				try {
+					await addPathsToGitignore(gitService, [...patterns]);
 					refreshAll();
 				} catch (err) {
 					vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);

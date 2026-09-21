@@ -1,6 +1,13 @@
 import type { CommitHostMessage, CommitStagedFile, CommitWebviewMessage } from '../commitProtocol';
 
 declare function acquireVsCodeApi(): { postMessage(message: CommitWebviewMessage): void };
+declare global {
+	interface Window {
+		/** Injected inline by commitPanel.ts's getHtml() from context.globalState -- whatever was
+		 * last persisted via 'draftChanged', or null if there's nothing saved. */
+		__ggitDraft: { subject: string; body: string } | null;
+	}
+}
 
 const vscodeApi = acquireVsCodeApi();
 
@@ -78,6 +85,17 @@ function submit(): void {
 	vscodeApi.postMessage({ type: 'commit', subject, body: bodyTextarea.value.trim(), amend: amendCheckbox.checked });
 }
 
+/** Persists whatever's currently in the fields via context.globalState (see commitPanel.ts), so an
+ * in-progress message survives not just switching tabs but fully closing/reopening the panel or
+ * reloading the window. Debounced -- there's no need to write on every single keystroke. */
+let draftSaveTimer: ReturnType<typeof setTimeout> | undefined;
+function scheduleDraftSave(): void {
+	clearTimeout(draftSaveTimer);
+	draftSaveTimer = setTimeout(() => {
+		vscodeApi.postMessage({ type: 'draftChanged', subject: subjectInput.value, body: bodyTextarea.value });
+	}, 300);
+}
+
 amendCheckbox.addEventListener('change', () => {
 	if (amendCheckbox.checked) {
 		draftSubject = subjectInput.value;
@@ -89,9 +107,12 @@ amendCheckbox.addEventListener('change', () => {
 		bodyTextarea.value = draftBody;
 	}
 	updateCommitEnabled();
+	scheduleDraftSave();
 });
 
 subjectInput.addEventListener('input', updateCommitEnabled);
+subjectInput.addEventListener('input', scheduleDraftSave);
+bodyTextarea.addEventListener('input', scheduleDraftSave);
 commitButton.addEventListener('click', submit);
 
 // Delegated rather than attached per-row, since renderStaged rebuilds #files' innerHTML wholesale on
@@ -137,6 +158,15 @@ window.addEventListener('message', event => {
 			break;
 	}
 });
+
+// Restore a persisted draft before the first 'staged' message ever arrives -- amendCheckbox starts
+// unchecked, so this can't collide with the 'staged' handler's own amend-mode pre-fill above.
+if (window.__ggitDraft) {
+	subjectInput.value = window.__ggitDraft.subject;
+	bodyTextarea.value = window.__ggitDraft.body;
+	draftSubject = window.__ggitDraft.subject;
+	draftBody = window.__ggitDraft.body;
+}
 
 updateCommitEnabled();
 vscodeApi.postMessage({ type: 'ready' });

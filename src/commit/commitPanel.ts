@@ -2,6 +2,16 @@ import * as vscode from 'vscode';
 import { GitService } from '../git/gitService';
 import { CommitHostMessage, CommitWebviewMessage } from './commitProtocol';
 
+/** Shared across every Commit panel instance/reload, not scoped to a single webview session --
+ * this is what makes an in-progress message survive fully closing and reopening the panel, or
+ * reloading the window, not just switching tabs (retainContextWhenHidden covers that case alone). */
+const DRAFT_STATE_KEY = 'ggit.commitPanel.draft';
+
+interface CommitDraft {
+	subject: string;
+	body: string;
+}
+
 /** A first-class companion panel for `git commit`, mirroring CreateBranchPanel's form-style approach —
  * a plain InputBox can't offer a separate subject/body, an Amend checkbox, or a live preview of what's
  * about to be committed, and VS Code has no native multi-field dialog to fall back on either. */
@@ -13,7 +23,7 @@ export class CommitPanel {
 	private ready = false;
 
 	private constructor(
-		context: vscode.ExtensionContext,
+		private readonly context: vscode.ExtensionContext,
 		private readonly gitService: GitService,
 		private readonly onCommitted: () => void,
 		private readonly onCommitSucceeded: () => void
@@ -24,6 +34,11 @@ export class CommitPanel {
 			{ viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
 			{
 				enableScripts: true,
+				// Without this, VS Code tears down the webview's JS/DOM entirely once it's hidden (e.g.
+				// switching to another tab) and rebuilds from scratch when shown again -- silently
+				// dropping whatever was typed, since that's plain in-page state with nothing telling VS
+				// Code to keep it around. History's panel already sets this for the same reason.
+				retainContextWhenHidden: true,
 				localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')],
 			}
 		);
@@ -93,11 +108,17 @@ export class CommitPanel {
 					await this.gitService.commit(message, { amend: msg.amend });
 					this.onCommitted();
 					this.onCommitSucceeded();
+					// The draft's job is done once it's actually been committed -- otherwise the next time
+					// this panel opens, it'd pre-fill the message that was *just* committed.
+					void this.context.globalState.update(DRAFT_STATE_KEY, undefined);
 					this.post({ type: 'committed' });
 					await this.sendStaged();
 				} catch (err) {
 					this.post({ type: 'error', message: (err as Error).message });
 				}
+				break;
+			case 'draftChanged':
+				void this.context.globalState.update(DRAFT_STATE_KEY, { subject: msg.subject, body: msg.body } satisfies CommitDraft);
 				break;
 			case 'setStaged':
 				try {
@@ -143,6 +164,12 @@ export class CommitPanel {
 		const webview = this.panel.webview;
 		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'dist', 'commitWebview.js'));
 		const nonce = getNonce();
+		const draft = context.globalState.get<CommitDraft>(DRAFT_STATE_KEY) ?? null;
+		// Handed to the webview as data via a global, not interpolated into any HTML attribute/text --
+		// JSON.stringify already escapes everything needed for a <script> body; the one extra thing it
+		// doesn't cover is a literal "</script" inside the string prematurely closing the tag, which the
+		// < substitution guards against.
+		const draftJson = JSON.stringify(draft).replace(/</g, '\\u003c');
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -398,6 +425,7 @@ export class CommitPanel {
 			<div id="files"></div>
 		</div>
 	</div>
+	<script nonce="${nonce}">window.__ggitDraft = ${draftJson};</script>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

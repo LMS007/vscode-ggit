@@ -170,8 +170,16 @@
         "icon": "$(go-to-file)"
       },
       {
-        "command": "ggit.addToGitignore",
-        "title": "Add to .gitignore"
+        "command": "ggit.ignoreThisItem",
+        "title": "Ignore This Item"
+      },
+      {
+        "command": "ggit.ignoreByName",
+        "title": "Ignore All Items with This Name"
+      },
+      {
+        "command": "ggit.ignoreByType",
+        "title": "Ignore All Items with This Extension"
       },
       {
         "command": "ggit.revealInExplorerView",
@@ -209,6 +217,12 @@
       {
         "command": "ggit.deleteStash",
         "title": "Delete Stash"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "ggit.ignoreSubmenu",
+        "label": "Ignore"
       }
     ],
     "menus": {
@@ -320,7 +334,7 @@
           "group": "2_discard"
         },
         {
-          "command": "ggit.addToGitignore",
+          "submenu": "ggit.ignoreSubmenu",
           "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
           "group": "3_gitignore"
         },
@@ -368,6 +382,20 @@
           "command": "ggit.deleteStash",
           "when": "view == ggitStashes && viewItem == stash",
           "group": "9_delete@1"
+        }
+      ],
+      "ggit.ignoreSubmenu": [
+        {
+          "command": "ggit.ignoreThisItem",
+          "group": "1_ignore@1"
+        },
+        {
+          "command": "ggit.ignoreByName",
+          "group": "1_ignore@2"
+        },
+        {
+          "command": "ggit.ignoreByType",
+          "group": "1_ignore@3"
         }
       ]
     }
