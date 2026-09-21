@@ -10,6 +10,7 @@ src/**
 esbuild.js
 vsc-extension-quickstart.md
 icon-preview2.html
+plans/**
 **/tsconfig.json
 **/eslint.config.mjs
 **/*.map
