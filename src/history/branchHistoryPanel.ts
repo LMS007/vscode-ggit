@@ -69,25 +69,28 @@ export class BranchHistoryPanel {
 		BranchHistoryPanel.current = new BranchHistoryPanel(context, gitService, branchName);
 	}
 
-	/** Reloads the currently open history tab, if any — call after a successful fetch/pull. */
+	/** Reloads the currently open history tab, if any — call after a successful fetch/pull.
+	 * focusLatest stays false here: this is a background data refresh, not the panel being opened or
+	 * brought to the front, so it keeps whatever commit was already selected rather than yanking the
+	 * user's attention away from a commit they might be actively reviewing. */
 	static refreshIfOpen(): void {
-		void BranchHistoryPanel.current?.loadCommits();
+		void BranchHistoryPanel.current?.loadCommits(false);
 	}
 
 	private showBranch(branchName: string): void {
 		this.branchName = branchName;
 		this.panel.title = `History: ${branchName}`;
 		this.panel.reveal(vscode.ViewColumn.Active, true);
-		void this.loadCommits();
+		void this.loadCommits(true);
 	}
 
-	private async loadCommits(): Promise<void> {
+	private async loadCommits(focusLatest: boolean): Promise<void> {
 		if (!this.ready) {
 			return;
 		}
 		try {
 			const commits = await this.gitService.getLog(this.branchName);
-			this.post({ type: 'commits', branchName: this.branchName, commits });
+			this.post({ type: 'commits', branchName: this.branchName, commits, focusLatest });
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
 		}
@@ -97,7 +100,7 @@ export class BranchHistoryPanel {
 		switch (msg.type) {
 			case 'ready':
 				this.ready = true;
-				await this.loadCommits();
+				await this.loadCommits(true);
 				break;
 			case 'selectCommit':
 				try {

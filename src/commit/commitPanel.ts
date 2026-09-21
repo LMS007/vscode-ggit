@@ -15,7 +15,8 @@ export class CommitPanel {
 	private constructor(
 		context: vscode.ExtensionContext,
 		private readonly gitService: GitService,
-		private readonly onCommitted: () => void
+		private readonly onCommitted: () => void,
+		private readonly onCommitSucceeded: () => void
 	) {
 		this.panel = vscode.window.createWebviewPanel(
 			'ggitCommit',
@@ -31,12 +32,17 @@ export class CommitPanel {
 		this.panel.webview.onDidReceiveMessage((msg: CommitWebviewMessage) => this.handleMessage(msg), null, this.disposables);
 	}
 
-	static createOrShow(context: vscode.ExtensionContext, gitService: GitService, onCommitted: () => void): void {
+	static createOrShow(
+		context: vscode.ExtensionContext,
+		gitService: GitService,
+		onCommitted: () => void,
+		onCommitSucceeded: () => void
+	): void {
 		if (CommitPanel.current) {
 			CommitPanel.current.panel.reveal(vscode.ViewColumn.Active, false);
 			return;
 		}
-		CommitPanel.current = new CommitPanel(context, gitService, onCommitted);
+		CommitPanel.current = new CommitPanel(context, gitService, onCommitted, onCommitSucceeded);
 	}
 
 	/** Refreshes the staged-files list/stats in the open panel, if any — called from extension.ts's
@@ -86,6 +92,7 @@ export class CommitPanel {
 					const message = msg.body ? `${msg.subject}\n\n${msg.body}` : msg.subject;
 					await this.gitService.commit(message, { amend: msg.amend });
 					this.onCommitted();
+					this.onCommitSucceeded();
 					this.post({ type: 'committed' });
 					await this.sendStaged();
 				} catch (err) {

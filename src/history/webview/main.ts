@@ -269,8 +269,17 @@ window.addEventListener('message', event => {
 				filesEl.innerHTML = '<div class="empty">Select a commit to see its changed files.</div>';
 				break;
 			}
-			// Sticky selection across a branch switch: stay on the same commit if the new branch's
-			// log still contains it (a shared ancestor, most likely), otherwise fall back to the top.
+			if (message.focusLatest) {
+				// The panel was just opened or brought to the front (e.g. right after committing) --
+				// always jump to the newest commit rather than sticking with whatever was selected
+				// before, since the point of focusing it is to see what's actually new.
+				selectCommit(message.commits[0].hash);
+				commitsEl.querySelector<HTMLElement>(`.row[data-sha="${message.commits[0].hash}"]`)?.scrollIntoView({ block: 'nearest' });
+				break;
+			}
+			// Background reload (e.g. after a fetch/pull) -- sticky selection: stay on the same commit
+			// if the new log still contains it (a shared ancestor, most likely), otherwise fall back to
+			// the top.
 			const stillPresent = selectedSha && message.commits.some(c => c.hash === selectedSha);
 			selectCommit(stillPresent ? selectedSha! : message.commits[0].hash);
 			if (stillPresent) {

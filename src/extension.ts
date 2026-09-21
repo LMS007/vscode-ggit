@@ -299,7 +299,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 
 		vscode.commands.registerCommand('ggit.commit', () => {
-			CommitPanel.createOrShow(context, gitService, refreshAll);
+			CommitPanel.createOrShow(context, gitService, refreshAll, async () => {
+				const branch = await gitService.getCurrentBranch();
+				if (branch) {
+					BranchHistoryPanel.createOrShow(context, gitService, branch);
+				}
+			});
 		}),
 
 		vscode.commands.registerCommand('ggit.stashAll', () =>
