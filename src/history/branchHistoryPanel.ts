@@ -111,15 +111,11 @@ export class BranchHistoryPanel {
 		}
 	}
 
-	/** Requested by the webview when the commits pane is scrolled near its bottom. Guarded against
-	 * overlapping requests (a fast scroll can fire this more than once before the first reply lands)
-	 * and against a branch switch racing in while a page is in flight -- either would otherwise risk
-	 * appending a stale page's commits onto the wrong branch's list. */
-	private async loadMoreCommits(): Promise<void> {
-		if (!this.hasMoreCommits || this.loadingMoreCommits) {
-			return;
-		}
-		this.loadingMoreCommits = true;
+	/** Fetches and posts exactly one more page, updating pagination state. Returns whether there's
+	 * still more beyond this page (false either because history ran out or the fetch failed) --
+	 * shared by loadMoreCommits (a single call, scroll-triggered) and ensureCommitsForSearch (a loop,
+	 * search-triggered) so both go through identical bookkeeping instead of duplicating it. */
+	private async fetchNextPage(): Promise<boolean> {
 		const branchAtRequestTime = this.branchName;
 		try {
 			const { commits, hasMore } = await this.gitService.getLog(this.branchName, {
@@ -127,11 +123,15 @@ export class BranchHistoryPanel {
 				limit: COMMITS_PAGE_SIZE,
 			});
 			if (branchAtRequestTime !== this.branchName) {
-				return;
+				// A branch switch raced in while this was in flight -- the new branch's own loadCommits
+				// has already (or is about to) reset all this state, so just drop the stale result rather
+				// than appending it onto the wrong branch's list.
+				return false;
 			}
 			this.commitsLoaded += commits.length;
 			this.hasMoreCommits = hasMore;
 			this.post({ type: 'moreCommits', commits, hasMore });
+			return hasMore;
 		} catch (err) {
 			// Not posted as a webview 'error' -- that wipes the whole commits pane, which would throw
 			// away an already-successfully-rendered first page just because a *later* page failed.
@@ -139,8 +139,49 @@ export class BranchHistoryPanel {
 			// page instead of needing dedicated retry UI.
 			vscode.window.showErrorMessage(`GGit: Failed to load more commits: ${(err as Error).message}`);
 			this.post({ type: 'moreCommitsFailed' });
+			return false;
+		}
+	}
+
+	/** Requested by the webview when the commits pane is scrolled near its bottom. Guarded against
+	 * overlapping requests (a fast scroll can fire this more than once before the first reply lands)
+	 * -- also shares its guard with ensureCommitsForSearch below, so the two can't run concurrently
+	 * and race each other's bookkeeping. */
+	private async loadMoreCommits(): Promise<void> {
+		if (!this.hasMoreCommits || this.loadingMoreCommits) {
+			return;
+		}
+		this.loadingMoreCommits = true;
+		try {
+			await this.fetchNextPage();
 		} finally {
 			this.loadingMoreCommits = false;
+		}
+	}
+
+	/** Bulk-loads pages until at least `minCount` commits are loaded or history runs out -- see
+	 * plans/commit-search-plan.md. A cheap no-op (just an immediate 'searchLoadFinished') if already
+	 * satisfied, so the webview can call this unconditionally on every search-box focus without
+	 * needing to track "have I already done this" itself. */
+	private async ensureCommitsForSearch(minCount: number): Promise<void> {
+		if (this.loadingMoreCommits) {
+			return;
+		}
+		if (this.commitsLoaded >= minCount || !this.hasMoreCommits) {
+			this.post({ type: 'searchLoadFinished', totalLoaded: this.commitsLoaded, hasMore: this.hasMoreCommits });
+			return;
+		}
+		this.loadingMoreCommits = true;
+		try {
+			while (this.commitsLoaded < minCount && this.hasMoreCommits) {
+				const hasMore = await this.fetchNextPage();
+				if (!hasMore) {
+					break;
+				}
+			}
+		} finally {
+			this.loadingMoreCommits = false;
+			this.post({ type: 'searchLoadFinished', totalLoaded: this.commitsLoaded, hasMore: this.hasMoreCommits });
 		}
 	}
 
@@ -152,6 +193,9 @@ export class BranchHistoryPanel {
 				break;
 			case 'loadMoreCommits':
 				await this.loadMoreCommits();
+				break;
+			case 'ensureCommitsForSearch':
+				await this.ensureCommitsForSearch(msg.minCount);
 				break;
 			case 'selectCommit':
 				try {
@@ -349,7 +393,80 @@ export class BranchHistoryPanel {
 			color: #ffffff;
 		}
 		.toolbar-btn-success:hover {
+			/* Re-declared, not inherited -- the base .toolbar-btn:hover rule also sets
+			 * background-color (to a generic grey toolbar-hover tint), and since it's an equally
+			 * specific selector, that rule was winning for this property whenever this block didn't
+			 * explicitly compete for it -- which is what made the green look like it was fading to grey
+			 * on hover despite this block already overriding border-color correctly. */
+			background-color: #1f883d;
 			border-color: rgba(255, 255, 255, 0.6);
+		}
+		#searchBar {
+			flex: 0 0 auto;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 6px 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			color: var(--vscode-descriptionForeground);
+		}
+		#searchInput {
+			flex: 1 1 auto;
+			box-sizing: border-box;
+			padding: 4px 8px;
+			background-color: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 3px;
+			font-family: inherit;
+			font-size: inherit;
+		}
+		#searchInput:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
+		}
+		#searchStatus {
+			flex: 0 0 auto;
+			font-size: 0.9em;
+			white-space: nowrap;
+		}
+		.icon-btn {
+			flex: 0 0 auto;
+			width: 22px;
+			height: 22px;
+			padding: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			border: 1px solid rgba(200, 200, 200, 0.4);
+			border-radius: 4px;
+			background: transparent;
+			color: var(--vscode-icon-foreground, var(--vscode-foreground));
+			cursor: pointer;
+		}
+		.icon-btn:hover {
+			background-color: var(--vscode-toolbar-hoverBackground);
+		}
+		.icon-btn .codicon {
+			font-size: 14px;
+		}
+		.load-older-row {
+			display: flex;
+			justify-content: center;
+			padding: 10px;
+		}
+		.load-older-row button {
+			background: transparent;
+			border: 1px solid rgba(200, 200, 200, 0.4);
+			border-radius: 4px;
+			color: var(--vscode-textLink-foreground);
+			padding: 4px 12px;
+			cursor: pointer;
+			font-family: inherit;
+			font-size: inherit;
+		}
+		.load-older-row button:hover {
+			background-color: var(--vscode-toolbar-hoverBackground);
 		}
 		#layout {
 			display: flex;
@@ -617,6 +734,14 @@ export class BranchHistoryPanel {
 </head>
 <body>
 	<div id="toolbar">${toolbarButtons}</div>
+	<div id="searchBar">
+		<span class="codicon codicon-search"></span>
+		<input id="searchInput" type="text" autocomplete="off" spellcheck="false" placeholder="Search commits by author or message…" />
+		<span id="searchStatus"></span>
+		<button id="searchClearButton" class="icon-btn" title="Clear search" aria-label="Clear search" hidden>
+			<span class="codicon codicon-close"></span>
+		</button>
+	</div>
 	<div id="layout" data-initial-split="${initialSplitPercent}">
 		<div id="commits" class="pane"><div class="empty">Loading commits…</div></div>
 		<div id="splitter"></div>

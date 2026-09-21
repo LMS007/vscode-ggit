@@ -14,6 +14,21 @@ const splitterEl = document.getElementById('splitter')!;
 const toolbarEl = document.getElementById('toolbar')!;
 const commitContextMenuEl = document.getElementById('commitContextMenu')!;
 const pushButtonEl = toolbarEl.querySelector<HTMLElement>('.toolbar-btn[data-command="ggit.push"]');
+const searchInput = document.getElementById('searchInput') as HTMLInputElement;
+const searchStatusEl = document.getElementById('searchStatus')!;
+const searchClearButton = document.getElementById('searchClearButton') as HTMLButtonElement;
+
+/** See plans/commit-search-plan.md -- verified against a real large repo that this is cheap
+ * (git log scales near-linearly, ~35-50ms for 500-2000 commits), so there's little reason to
+ * lowball it. Going deeper than this is the "Search older commits" affordance's job, not a bigger
+ * default. */
+const SEARCH_MIN_COMMITS = 1000;
+
+/** Hard ceiling on how deep "Search older commits" can go, no matter how many times it's clicked --
+ * a runaway-loading incident (see the scroll-listener fix above) made it clear this needs an actual
+ * backstop, not just "trust the button is only clicked a reasonable number of times." Once hit, the
+ * button stops appearing and a message explains why instead. */
+const SEARCH_MAX_COMMITS = 5000;
 
 toolbarEl.addEventListener('click', event => {
 	const btn = (event.target as HTMLElement).closest<HTMLElement>('.toolbar-btn[data-command]');
@@ -30,6 +45,12 @@ let selectedFileIndex = -1;
 let activePane: 'commits' | 'files' = 'commits';
 let hasMoreCommits = false;
 let loadingMoreCommits = false;
+// True specifically while an ensureCommitsForSearch bulk-load loop is in flight -- kept separate
+// from loadingMoreCommits' own meaning (which the 'moreCommits' handler below would otherwise clear
+// after just the *first* page of a multi-page bulk load, since that handler doesn't know it's part
+// of a loop rather than a single scroll-triggered fetch).
+let bulkLoadingForSearch = false;
+let searchQuery = '';
 
 function escapeHtml(text: string): string {
 	return text
@@ -75,10 +96,79 @@ function renderCommits(commits: CommitInfo[]): void {
 
 /** Appends a page onto what's already rendered, rather than rebuilding the whole (potentially large,
  * after several scroll-triggered pages) list -- keeps each "load more" cheap regardless of how much
- * has accumulated so far. */
+ * has accumulated so far. While a search is active, a plain append would be wrong (the new commits
+ * might not match, or might, but either way need to go through the filter) -- that case defers to a
+ * full filtered re-render instead, which is cheap enough at this scale (verified: even a few
+ * thousand commits filters and re-renders in well under 100ms). */
 function appendCommits(commits: CommitInfo[]): void {
 	currentCommits = currentCommits.concat(commits);
-	commitsEl.insertAdjacentHTML('beforeend', commits.map(commitRowHtml).join(''));
+	if (searchQuery.trim()) {
+		applyFilterAndRender();
+	} else {
+		commitsEl.insertAdjacentHTML('beforeend', commits.map(commitRowHtml).join(''));
+	}
+}
+
+function matchesSearch(c: CommitInfo, query: string): boolean {
+	return (
+		c.authorName.toLowerCase().includes(query) ||
+		c.authorEmail.toLowerCase().includes(query) ||
+		c.message.toLowerCase().includes(query)
+	);
+}
+
+const LOAD_OLDER_ROW_ID = 'loadOlderCommitsRow';
+
+/** Shown below the (filtered) list while a search is active and there's more history not yet
+ * loaded -- the deliberate, on-demand way to search past SEARCH_MIN_COMMITS, rather than ever
+ * guessing a single "big enough" default. Hidden while a bulk load is already in flight (the
+ * loading indicator covers that instead) so there's never a redundant, clickable-looking button
+ * sitting there mid-fetch. */
+function updateLoadOlderRow(): void {
+	document.getElementById(LOAD_OLDER_ROW_ID)?.remove();
+	if (!searchQuery.trim() || !hasMoreCommits || bulkLoadingForSearch) {
+		return;
+	}
+	if (currentCommits.length >= SEARCH_MAX_COMMITS) {
+		commitsEl.insertAdjacentHTML(
+			'beforeend',
+			`<div id="${LOAD_OLDER_ROW_ID}" class="load-older-row"><span class="empty">Reached the ${SEARCH_MAX_COMMITS}-commit search limit. Try narrowing your search.</span></div>`
+		);
+		return;
+	}
+	commitsEl.insertAdjacentHTML(
+		'beforeend',
+		`<div id="${LOAD_OLDER_ROW_ID}" class="load-older-row"><button id="loadOlderButton" type="button">Search older commits</button></div>`
+	);
+}
+
+/** Re-derives what's visible from currentCommits + searchQuery -- called on every keystroke and
+ * whenever currentCommits grows while a search is active. A full re-render rather than incremental
+ * append/toggle: simpler to keep correct, and cheap enough at the sizes this ever deals with
+ * (bounded by SEARCH_MIN_COMMITS plus however many "Search older" clicks were made). */
+function applyFilterAndRender(): void {
+	const query = searchQuery.trim().toLowerCase();
+	searchClearButton.hidden = !query;
+	if (!query) {
+		// Back to the plain, unfiltered view -- covers backspacing a search back to empty, not just
+		// the explicit clear button (which just delegates here after resetting the query).
+		searchStatusEl.textContent = '';
+		renderCommits(currentCommits);
+		if (selectedSha) {
+			highlightSelectedCommit(selectedSha);
+		}
+		updateLoadOlderRow();
+		return;
+	}
+	const matches = currentCommits.filter(c => matchesSearch(c, query));
+	selectedRowEl = undefined;
+	commitsEl.innerHTML =
+		matches.length === 0 ? '<div class="empty">No matches in loaded commits.</div>' : matches.map(commitRowHtml).join('');
+	if (selectedSha) {
+		highlightSelectedCommit(selectedSha);
+	}
+	searchStatusEl.textContent = `${matches.length} match${matches.length === 1 ? '' : 'es'} of ${currentCommits.length} loaded`;
+	updateLoadOlderRow();
 }
 
 const LOADING_MORE_ROW_ID = 'loadingMoreCommitsRow';
@@ -154,7 +244,20 @@ function selectCommit(sha: string): void {
 	vscodeApi.postMessage({ type: 'selectCommit', sha });
 }
 
+function requestMoreForSearch(minCount: number): void {
+	bulkLoadingForSearch = true;
+	loadingMoreCommits = true;
+	showLoadingMoreIndicator();
+	updateLoadOlderRow();
+	vscodeApi.postMessage({ type: 'ensureCommitsForSearch', minCount });
+}
+
 commitsEl.addEventListener('click', event => {
+	const loadOlderBtn = (event.target as HTMLElement).closest<HTMLElement>('#loadOlderButton');
+	if (loadOlderBtn) {
+		requestMoreForSearch(Math.min(currentCommits.length + SEARCH_MIN_COMMITS, SEARCH_MAX_COMMITS));
+		return;
+	}
 	activePane = 'commits';
 	const row = (event.target as HTMLElement).closest<HTMLElement>('.row[data-sha]');
 	if (row) {
@@ -228,21 +331,23 @@ window.addEventListener('click', event => {
 });
 window.addEventListener('blur', hideContextMenu);
 
+/** Walks whatever's actually rendered in the commits pane, in DOM order, rather than indexing into
+ * currentCommits directly -- currentCommits is the full accumulated list, but a search may be
+ * filtering it down to a much smaller visible subset, and arrow/page navigation should move through
+ * what's on screen, not silently jump through hidden non-matches. */
 function selectCommitByOffset(offset: number): void {
-	if (currentCommits.length === 0) {
+	const rows = Array.from(commitsEl.querySelectorAll<HTMLElement>('.row[data-sha]'));
+	if (rows.length === 0) {
 		return;
 	}
-	const currentIndex = currentCommits.findIndex(c => c.hash === selectedSha);
-	const nextIndex = Math.min(
-		currentCommits.length - 1,
-		Math.max(0, (currentIndex === -1 ? 0 : currentIndex) + offset)
-	);
-	const next = currentCommits[nextIndex];
-	if (next.hash === selectedSha) {
+	const currentIndex = rows.findIndex(r => r.dataset.sha === selectedSha);
+	const nextIndex = Math.min(rows.length - 1, Math.max(0, (currentIndex === -1 ? 0 : currentIndex) + offset));
+	const nextSha = rows[nextIndex].dataset.sha!;
+	if (nextSha === selectedSha) {
 		return;
 	}
-	selectCommit(next.hash);
-	commitsEl.querySelector<HTMLElement>(`.row[data-sha="${next.hash}"]`)?.scrollIntoView({ block: 'nearest' });
+	selectCommit(nextSha);
+	rows[nextIndex].scrollIntoView({ block: 'nearest' });
 }
 
 function selectFile(index: number): void {
@@ -327,6 +432,13 @@ window.addEventListener('message', event => {
 		case 'commits': {
 			hasMoreCommits = message.hasMore;
 			loadingMoreCommits = false;
+			bulkLoadingForSearch = false;
+			// A fresh load (branch switch/open/reveal) starts over -- carrying a search across to an
+			// unrelated branch's commit list wouldn't mean anything.
+			searchQuery = '';
+			searchInput.value = '';
+			searchStatusEl.textContent = '';
+			searchClearButton.hidden = true;
 			pushButtonEl?.classList.toggle('toolbar-btn-success', message.aheadCount > 0);
 			commitsEl.scrollTop = 0;
 			renderCommits(message.commits);
@@ -354,13 +466,26 @@ window.addEventListener('message', event => {
 		}
 		case 'moreCommits':
 			hasMoreCommits = message.hasMore;
-			loadingMoreCommits = false;
-			hideLoadingMoreIndicator();
+			// Only clear the single-page loading state here, not while a bulk search-load loop is still
+			// in progress -- that loop's own 'searchLoadFinished' (below) is what actually finishes,
+			// since a bulk load is many 'moreCommits' messages in a row, not just one.
+			if (!bulkLoadingForSearch) {
+				loadingMoreCommits = false;
+				hideLoadingMoreIndicator();
+			}
 			appendCommits(message.commits);
 			break;
 		case 'moreCommitsFailed':
 			loadingMoreCommits = false;
+			bulkLoadingForSearch = false;
 			hideLoadingMoreIndicator();
+			updateLoadOlderRow();
+			break;
+		case 'searchLoadFinished':
+			bulkLoadingForSearch = false;
+			loadingMoreCommits = false;
+			hideLoadingMoreIndicator();
+			applyFilterAndRender();
 			break;
 		case 'files':
 			if (message.sha === selectedSha) {
@@ -378,7 +503,14 @@ const LOAD_MORE_THRESHOLD_PX = 300;
 commitsEl.addEventListener(
 	'scroll',
 	() => {
-		if (!hasMoreCommits || loadingMoreCommits) {
+		// Passive infinite-scroll must stay off entirely while a search is active. A filtered result
+		// list is usually short, which means it's already "near the bottom" by definition regardless
+		// of how much history is actually loaded -- without this check, that falsely satisfied the
+		// threshold below on essentially every scroll tick, firing loadMoreCommits over and over (each
+		// one appending to currentCommits and triggering a full filtered re-render) in a tight loop
+		// that made the whole window unresponsive. While searching, only the explicit "Search older
+		// commits" button (which has its own hard cap) is allowed to fetch more.
+		if (searchQuery.trim() || !hasMoreCommits || loadingMoreCommits) {
 			return;
 		}
 		const distanceFromBottom = commitsEl.scrollHeight - commitsEl.scrollTop - commitsEl.clientHeight;
@@ -390,6 +522,34 @@ commitsEl.addEventListener(
 	},
 	{ passive: true }
 );
+
+// First interaction with the search box kicks off the bulk pre-load, before the user's even typed
+// anything -- by the time they finish typing a first character, most/all of it has often already
+// landed. { once: true } since ensureCommitsForSearch is a cheap no-op host-side once satisfied, so
+// there's no need to keep re-triggering it on every subsequent focus.
+searchInput.addEventListener(
+	'focus',
+	() => {
+		requestMoreForSearch(SEARCH_MIN_COMMITS);
+	},
+	{ once: true }
+);
+
+let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+searchInput.addEventListener('input', () => {
+	clearTimeout(searchDebounceTimer);
+	searchDebounceTimer = setTimeout(() => {
+		searchQuery = searchInput.value;
+		applyFilterAndRender();
+	}, 150);
+});
+
+searchClearButton.addEventListener('click', () => {
+	searchInput.value = '';
+	searchQuery = '';
+	applyFilterAndRender();
+	searchInput.focus();
+});
 
 const MIN_PANE_WIDTH_PX = 120;
 let dragging = false;

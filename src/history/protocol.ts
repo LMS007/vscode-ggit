@@ -25,6 +25,11 @@ export type HostMessage =
 	/** A 'loadMoreCommits' request failed -- resets the webview's own loading guard (so scrolling
 	 * again retries) without wiping anything already rendered, unlike the generic 'error' message. */
 	| { type: 'moreCommitsFailed' }
+	/** The bulk pre-load-for-search loop (see ensureCommitsForSearch) finished -- either it reached
+	 * the requested minimum, or ran out of history first (hasMore false). Individual pages along the
+	 * way still arrive as normal 'moreCommits' messages; this just marks when the loop is done so the
+	 * webview knows the "Search older commits" affordance's state is now accurate. */
+	| { type: 'searchLoadFinished'; totalLoaded: number; hasMore: boolean }
 	| { type: 'files'; sha: string; files: ChangedFile[] }
 	| { type: 'error'; message: string };
 
@@ -42,4 +47,8 @@ export type WebviewMessage =
 	| { type: 'loadMoreCommits' }
 	/** The file-list pane's open-file icon was clicked -- opens the file's current working-tree copy
 	 * for editing (not a historical revision, which wouldn't be editable). */
-	| { type: 'openFileForEditing'; path: string };
+	| { type: 'openFileForEditing'; path: string }
+	/** The search box was focused (first interaction) or "Search older commits" was clicked -- ensure
+	 * at least `minCount` commits are loaded, fetching more pages if needed. A cheap no-op if already
+	 * satisfied. */
+	| { type: 'ensureCommitsForSearch'; minCount: number };
