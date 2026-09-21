@@ -74,6 +74,8 @@ export function activate(context: vscode.ExtensionContext): void {
 	// discussion: there's no "switch worktree" yet, so this never needs to change mid-session).
 	branchesView.description = workspaceFolder.name;
 
+	const remotesView = vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider });
+
 	// Mirrors the built-in Source Control icon's badge — VS Code aggregates a view's `badge` up onto
 	// its container's activity-bar icon automatically, so setting this on just the Working Copy view
 	// is enough to badge the whole "GGit" icon.
@@ -157,7 +159,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		workingCopyView,
 		branchesView,
-		vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider }),
+		remotesView,
 		vscode.window.createTreeView('ggitConflicts', { treeDataProvider: conflictsProvider, canSelectMany: true }),
 		vscode.window.registerWebviewViewProvider('ggitCommitLauncher', commitLauncherProvider),
 		// Multi-select is for bulk delete only — Apply always acts on just the row you right-clicked,
@@ -190,6 +192,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand('ggit.refresh', () => {
 			refreshAll();
+		}),
+
+		// createInputBox (not the simpler showInputBox) specifically because onDidChangeValue fires on
+		// every keystroke -- that's what makes the tree filter live as you type rather than only once
+		// you submit. Pre-filled with whatever filter's already active, so reopening it to tweak a term
+		// doesn't start you back at empty.
+		vscode.commands.registerCommand('ggit.searchRemotes', () => {
+			const inputBox = vscode.window.createInputBox();
+			inputBox.placeholder = 'Filter remote branches by name…';
+			inputBox.value = remotesProvider.filter;
+			inputBox.onDidChangeValue(value => {
+				remotesProvider.setFilter(value);
+				const trimmed = value.trim();
+				remotesView.description = trimmed ? `Filter: "${trimmed}"` : undefined;
+			});
+			inputBox.onDidHide(() => inputBox.dispose());
+			inputBox.show();
 		}),
 
 		vscode.commands.registerCommand('ggit.createBranch', () => {

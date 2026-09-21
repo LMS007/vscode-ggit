@@ -39,7 +39,8 @@ This is a personal project, not published to the Marketplace. It's installed loc
   checked-out branch and for one checked out in another worktree; escalates to a force-delete
   confirmation only if git refuses a safe delete)
 
-**Remotes** — browse and check out remote branches (also grouped into folders).
+**Remotes** — browse and check out remote branches (also grouped into folders). The search icon in
+its toolbar filters the list live as you type (case-insensitive, matches anywhere in the name).
 
 **Stashes** — list, apply, and delete (multi-select bulk delete, oldest-first to avoid reflog
 index shifts); correctly shows files from `--include-untracked` stashes.

@@ -126,6 +126,11 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "ggit.searchRemotes",
+        "title": "GGit: Search Remote Branches",
+        "icon": "$(search)"
+      },
+      {
         "command": "ggit.stageAll",
         "title": "GGit: Stage All",
         "icon": "$(add)"
@@ -282,9 +287,14 @@
           "group": "navigation@5"
         },
         {
+          "command": "ggit.searchRemotes",
+          "when": "view == ggitRemotes",
+          "group": "navigation@0"
+        },
+        {
           "command": "ggit.refresh",
           "when": "view == ggitRemotes",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "ggit.rebaseContinue",
