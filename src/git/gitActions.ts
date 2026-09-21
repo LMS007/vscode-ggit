@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { GGIT_SHOW_SCHEME, INDEX_REF } from '../diff/showContentProvider';
@@ -349,4 +350,31 @@ export async function stageHunkAtCursor(gitService: GitService): Promise<void> {
 export async function unstageHunkAtCursor(gitService: GitService): Promise<void> {
 	const { relPath, startLine, endLine } = resolveHunkTarget(gitService, 'staged');
 	await gitService.unstageHunkAtLine(relPath, startLine, endLine);
+}
+
+/** Appends one or more paths to the repo's top-level .gitignore, creating the file if it doesn't
+ * exist yet. Only adds a path if it (or a rooted "/path" form of it) isn't already present verbatim
+ * -- doesn't try to interpret existing glob patterns, so it won't catch e.g. "*.log" already
+ * covering a path being added, but it also won't ever produce a nonsensical duplicate for the exact
+ * common case. This only edits .gitignore itself; like the built-in Git extension's equivalent
+ * action, it doesn't also `git rm --cached` an already-tracked file -- .gitignore has no effect on
+ * a file git is already tracking, so this is only really useful for untracked ones. Opens the file
+ * afterward so what changed is visible, not silent. */
+export async function addPathsToGitignore(gitService: GitService, paths: string[]): Promise<void> {
+	const gitignorePath = path.join(gitService.repoRoot, '.gitignore');
+	let existingLines: string[] = [];
+	try {
+		existingLines = (await fs.promises.readFile(gitignorePath, 'utf8')).split('\n');
+	} catch {
+		// No .gitignore yet -- fine, this creates one.
+	}
+	const existing = new Set(existingLines.map(l => l.trim()).filter(Boolean));
+	const newPaths = paths.filter(p => !existing.has(p) && !existing.has(`/${p}`));
+	if (newPaths.length === 0) {
+		return;
+	}
+	const needsLeadingNewline = existingLines.length > 0 && existingLines[existingLines.length - 1].trim() !== '';
+	await fs.promises.appendFile(gitignorePath, (needsLeadingNewline ? '\n' : '') + newPaths.join('\n') + '\n', 'utf8');
+	const doc = await vscode.workspace.openTextDocument(gitignorePath);
+	await vscode.window.showTextDocument(doc, { preview: false });
 }

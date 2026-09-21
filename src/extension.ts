@@ -8,6 +8,7 @@ import { CommitFilesPanel } from './history/commitFilesPanel';
 import { openDiffForWorkingChange } from './diff/openDiff';
 import { GGitShowContentProvider, GGIT_SHOW_SCHEME } from './diff/showContentProvider';
 import {
+	addPathsToGitignore,
 	applyStashWithPicker,
 	deleteLocalBranch,
 	discardWorkingChanges,
@@ -355,6 +356,30 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		),
 
+		vscode.commands.registerCommand(
+			'ggit.addToGitignore',
+			async (file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
+				const files =
+					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
+				try {
+					await addPathsToGitignore(gitService, files.map(f => f.path));
+					refreshAll();
+				} catch (err) {
+					vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				}
+			}
+		),
+
+		vscode.commands.registerCommand('ggit.revealInExplorerView', (file: WorkingChangeFile) => {
+			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
+			void vscode.commands.executeCommand('revealInExplorer', uri);
+		}),
+
+		vscode.commands.registerCommand('ggit.revealInOS', (file: WorkingChangeFile) => {
+			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
+			void vscode.commands.executeCommand('revealFileInOS', uri);
+		}),
+
 		vscode.commands.registerCommand('ggit.createBranchFrom', (node: BranchTreeNode<BranchInfo>) => {
 			if (node.kind === 'leaf') {
 				CreateBranchPanel.createOrShow(context, gitService, refreshAll, node.item.name);
@@ -453,7 +478,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		)
 	);
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
-	const onGitDirChange = () => {
+	// Logged unconditionally (not just on a cache-miss) so a silent watcher -- e.g. `files.watcherExclude`
+	// quietly excluding `.git` in a config tuned for a huge repo -- shows up as "GGit: activated" in the
+	// output followed by nothing, rather than looking identical to a working one that just wasn't
+	// triggered during a given session.
+	const onGitDirChange = (uri: vscode.Uri) => {
+		output.appendLine(`gitDirWatcher fired: ${uri.fsPath}`);
 		clearTimeout(debounceTimer);
 		debounceTimer = setTimeout(() => {
 			refreshAll();
@@ -470,7 +500,8 @@ export function activate(context: vscode.ExtensionContext): void {
 	// Cmd+S or an Explorer delete. getWorkspaceFolder (rather than a manual fsPath.startsWith check)
 	// is what VS Code itself uses to answer "is this URI inside a workspace folder", so it's immune
 	// to the trailing-slash/symlink mismatches a string-prefix check can silently get wrong.
-	const refreshWorkingCopy = () => {
+	const refreshWorkingCopy = (reason: string) => {
+		output.appendLine(`refreshWorkingCopy: ${reason}`);
 		workingCopyProvider.refresh();
 		workingChangeDecorations.refresh();
 		void updateWorkingCopyBadge();
@@ -478,15 +509,42 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument(doc => {
 			if (vscode.workspace.getWorkspaceFolder(doc.uri)) {
-				refreshWorkingCopy();
+				refreshWorkingCopy(`saved ${doc.uri.fsPath}`);
 			}
 		}),
 		vscode.workspace.onDidDeleteFiles(e => {
 			if (e.files.some(uri => vscode.workspace.getWorkspaceFolder(uri))) {
-				refreshWorkingCopy();
+				refreshWorkingCopy(`deleted ${e.files.map(f => f.fsPath).join(', ')}`);
 			}
 		})
 	);
+
+	// The above two only catch changes made *through VS Code's own editor/Explorer* -- confirmed via
+	// a live test against this exact repo that a file written by an external tool (not a VS Code save)
+	// is invisible to both of them and to the .git-dir watcher, so Working Copy silently goes stale
+	// while the built-in Git extension (which has its own broader watch) keeps up fine. This recursive
+	// watcher is what closes that gap. It's the kind of watcher VS Code's own docs caution against
+	// using carelessly on a large repo -- but the built-in Git extension clearly needs (and does)
+	// exactly this to work at all, so the answer is to scope and debounce it, not avoid it entirely:
+	// `files.watcherExclude`'s defaults (.git/objects/**, etc.) plus whatever a repo/user already
+	// excludes (node_modules, build output, ...) apply here the same as for any other extension's
+	// recursive watcher, and this only ever triggers the cheap `git status`-based refresh above, never
+	// the full branches/remotes/stashes refreshAll.
+	const workingTreeWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceFolder, '**/*'));
+	let workingTreeDebounce: ReturnType<typeof setTimeout> | undefined;
+	const onWorkingTreeChange = (uri: vscode.Uri) => {
+		if (uri.fsPath.includes(`${path.sep}.git${path.sep}`) || uri.fsPath.endsWith(`${path.sep}.git`)) {
+			// Already covered by gitDirWatcher above -- skip to avoid double-refreshing on every commit/checkout.
+			return;
+		}
+		output.appendLine(`workingTreeWatcher fired: ${uri.fsPath}`);
+		clearTimeout(workingTreeDebounce);
+		workingTreeDebounce = setTimeout(() => refreshWorkingCopy(`external change: ${uri.fsPath}`), 500);
+	};
+	workingTreeWatcher.onDidChange(onWorkingTreeChange);
+	workingTreeWatcher.onDidCreate(onWorkingTreeChange);
+	workingTreeWatcher.onDidDelete(onWorkingTreeChange);
+	context.subscriptions.push(workingTreeWatcher);
 }
 
 /** Tree items don't have a native double-click event, so we detect one ourselves: two clicks on the

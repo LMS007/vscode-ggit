@@ -15,6 +15,9 @@ export type HostMessage =
 			/** Whether there are more, older commits beyond this page -- drives whether the webview
 			 * requests another page as the user scrolls near the bottom. */
 			hasMore: boolean;
+			/** How many commits are ready to push -- 0 means nothing to push. Drives the toolbar's
+			 * Push button turning green. */
+			aheadCount: number;
 	  }
 	/** A subsequent page, requested via 'loadMoreCommits' -- appended to, not replacing, what's
 	 * already rendered. */
@@ -36,4 +39,7 @@ export type WebviewMessage =
 	| { type: 'savePatch'; sha: string; subject: string }
 	/** The commits pane was scrolled near its bottom and there's more to fetch (see 'commits'.hasMore
 	 * / 'moreCommits'.hasMore). */
-	| { type: 'loadMoreCommits' };
+	| { type: 'loadMoreCommits' }
+	/** The file-list pane's open-file icon was clicked -- opens the file's current working-tree copy
+	 * for editing (not a historical revision, which wouldn't be editable). */
+	| { type: 'openFileForEditing'; path: string };

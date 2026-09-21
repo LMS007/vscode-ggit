@@ -11,7 +11,9 @@ This is a personal project, not published to the Marketplace. It's installed loc
 
 **Working Copy**
 - Flat staged/unstaged file list; the checkbox stages/unstages a file directly
-- Stage All / Unstage All / Save Stash / Apply Stash / Commit, all from the section's toolbar
+- A pinned "Create Commit" row above the file list — a check-all/uncheck-all staging toggle on the
+  left, the staged-file count on the right, click to open the Commit panel
+- Apply Stash / Save Stash / Refresh, from the section's toolbar
 - Discard Local Changes — deletes new files, restores deleted ones, reverts modified ones, with
   confirmation wording tailored to what's actually about to happen
 - Multi-select right-click to stash or discard several files at once

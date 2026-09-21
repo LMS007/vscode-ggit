@@ -13,6 +13,7 @@ const filesEl = document.getElementById('files')!;
 const splitterEl = document.getElementById('splitter')!;
 const toolbarEl = document.getElementById('toolbar')!;
 const commitContextMenuEl = document.getElementById('commitContextMenu')!;
+const pushButtonEl = toolbarEl.querySelector<HTMLElement>('.toolbar-btn[data-command="ggit.push"]');
 
 toolbarEl.addEventListener('click', event => {
 	const btn = (event.target as HTMLElement).closest<HTMLElement>('.toolbar-btn[data-command]');
@@ -80,6 +81,25 @@ function appendCommits(commits: CommitInfo[]): void {
 	commitsEl.insertAdjacentHTML('beforeend', commits.map(commitRowHtml).join(''));
 }
 
+const LOADING_MORE_ROW_ID = 'loadingMoreCommitsRow';
+
+/** Shown at the bottom of the commits pane while a lazy-loaded page is in flight -- a slow/busy git
+ * host (e.g. a loaded-down remote) can make that wait noticeable, and with nothing else changing on
+ * screen it previously just looked like scrolling had silently stopped working. */
+function showLoadingMoreIndicator(): void {
+	if (document.getElementById(LOADING_MORE_ROW_ID)) {
+		return;
+	}
+	commitsEl.insertAdjacentHTML(
+		'beforeend',
+		`<div id="${LOADING_MORE_ROW_ID}" class="loading-more-row"><span class="codicon codicon-loading codicon-modifier-spin"></span>Loading more commits…</div>`
+	);
+}
+
+function hideLoadingMoreIndicator(): void {
+	document.getElementById(LOADING_MORE_ROW_ID)?.remove();
+}
+
 /** Tracks the previously-selected row directly instead of scanning every row on each selection --
  * on a branch with a lot of history loaded (several scrolled-in pages), a full querySelectorAll
  * every time you click a different commit is real, avoidable work. */
@@ -121,6 +141,7 @@ function renderFiles(files: ChangedFile[]): void {
 					<span class="file-status status-${f.status}">${f.status}</span>
 					<span class="file-name">${escapeHtml(f.path)}</span>
 					<span class="file-stats">${renderFileStats(f)}</span>
+					<span class="file-open-icon codicon codicon-go-to-file" data-path="${escapeHtml(f.path)}" title="Open file for editing"></span>
 				</div>`
 		)
 		.join('');
@@ -251,24 +272,48 @@ function selectFileByOffset(offset: number): void {
 	filesEl.querySelector<HTMLElement>(`.row[data-index="${nextIndex}"]`)?.scrollIntoView({ block: 'nearest' });
 }
 
+/** How many rows actually fit in the pane's visible area, so Page Up/Down jumps a real screenful
+ * instead of an arbitrary guessed count -- measured off one already-rendered row rather than
+ * hardcoded, since commit rows and file rows aren't the same height. */
+function getPageRowCount(container: HTMLElement, rowSelector: string): number {
+	const row = container.querySelector<HTMLElement>(rowSelector);
+	const rowHeight = row?.getBoundingClientRect().height;
+	if (!rowHeight) {
+		return 10;
+	}
+	return Math.max(1, Math.floor(container.clientHeight / rowHeight));
+}
+
 window.addEventListener('keydown', event => {
 	if (event.key === 'Escape') {
 		hideContextMenu();
 		return;
 	}
-	if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+	const isArrow = event.key === 'ArrowDown' || event.key === 'ArrowUp';
+	const isPage = event.key === 'PageDown' || event.key === 'PageUp';
+	if (!isArrow && !isPage) {
 		return;
 	}
 	event.preventDefault();
-	const offset = event.key === 'ArrowDown' ? 1 : -1;
+	const direction = event.key === 'ArrowDown' || event.key === 'PageDown' ? 1 : -1;
 	if (activePane === 'commits') {
-		selectCommitByOffset(offset);
+		const step = isPage ? getPageRowCount(commitsEl, '.commit-row-wrapper') : 1;
+		selectCommitByOffset(direction * step);
 	} else {
-		selectFileByOffset(offset);
+		const step = isPage ? getPageRowCount(filesEl, '.file-row') : 1;
+		selectFileByOffset(direction * step);
 	}
 });
 
 filesEl.addEventListener('click', event => {
+	const openIcon = (event.target as HTMLElement).closest<HTMLElement>('.file-open-icon');
+	if (openIcon) {
+		// Stop this from also selecting the row (which would open a diff instead) -- opening for
+		// editing and viewing the diff are two different actions on the same row.
+		event.stopPropagation();
+		vscodeApi.postMessage({ type: 'openFileForEditing', path: openIcon.dataset.path! });
+		return;
+	}
 	activePane = 'files';
 	const row = (event.target as HTMLElement).closest<HTMLElement>('.row[data-index]');
 	if (row) {
@@ -282,6 +327,7 @@ window.addEventListener('message', event => {
 		case 'commits': {
 			hasMoreCommits = message.hasMore;
 			loadingMoreCommits = false;
+			pushButtonEl?.classList.toggle('toolbar-btn-success', message.aheadCount > 0);
 			commitsEl.scrollTop = 0;
 			renderCommits(message.commits);
 			if (message.commits.length === 0) {
@@ -309,10 +355,12 @@ window.addEventListener('message', event => {
 		case 'moreCommits':
 			hasMoreCommits = message.hasMore;
 			loadingMoreCommits = false;
+			hideLoadingMoreIndicator();
 			appendCommits(message.commits);
 			break;
 		case 'moreCommitsFailed':
 			loadingMoreCommits = false;
+			hideLoadingMoreIndicator();
 			break;
 		case 'files':
 			if (message.sha === selectedSha) {
@@ -336,6 +384,7 @@ commitsEl.addEventListener(
 		const distanceFromBottom = commitsEl.scrollHeight - commitsEl.scrollTop - commitsEl.clientHeight;
 		if (distanceFromBottom <= LOAD_MORE_THRESHOLD_PX) {
 			loadingMoreCommits = true;
+			showLoadingMoreIndicator();
 			vscodeApi.postMessage({ type: 'loadMoreCommits' });
 		}
 	},

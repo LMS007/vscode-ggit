@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "kylekeating",
   "license": "UNLICENSED",
   "private": true,
@@ -170,6 +170,18 @@
         "icon": "$(go-to-file)"
       },
       {
+        "command": "ggit.addToGitignore",
+        "title": "Add to .gitignore"
+      },
+      {
+        "command": "ggit.revealInExplorerView",
+        "title": "Reveal in Explorer View"
+      },
+      {
+        "command": "ggit.revealInOS",
+        "title": "Reveal in Finder"
+      },
+      {
         "command": "ggit.discardChanges",
         "title": "Discard Local Changes"
       },
@@ -251,14 +263,9 @@
           "group": "navigation@4"
         },
         {
-          "command": "ggit.refresh",
-          "when": "view == ggitBranches",
-          "group": "navigation@5"
-        },
-        {
           "command": "ggit.rebase",
           "when": "view == ggitBranches",
-          "group": "navigation@6"
+          "group": "navigation@5"
         },
         {
           "command": "ggit.refresh",
@@ -289,6 +296,11 @@
           "command": "ggit.stashAll",
           "when": "view == ggitWorkingCopy",
           "group": "navigation@1"
+        },
+        {
+          "command": "ggit.refresh",
+          "when": "view == ggitWorkingCopy",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -306,6 +318,21 @@
           "command": "ggit.discardChanges",
           "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
           "group": "2_discard"
+        },
+        {
+          "command": "ggit.addToGitignore",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "group": "3_gitignore"
+        },
+        {
+          "command": "ggit.revealInExplorerView",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "group": "4_reveal@1"
+        },
+        {
+          "command": "ggit.revealInOS",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "group": "4_reveal@2"
         },
         {
           "command": "ggit.createBranchFrom",

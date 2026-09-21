@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { openDiffForFile } from '../diff/openDiff';
 import { resetHeadToCommit } from '../git/gitActions';
@@ -98,10 +99,13 @@ export class BranchHistoryPanel {
 			return;
 		}
 		try {
-			const { commits, hasMore } = await this.gitService.getLog(this.branchName, { skip: 0, limit: COMMITS_PAGE_SIZE });
+			const [{ commits, hasMore }, aheadCount] = await Promise.all([
+				this.gitService.getLog(this.branchName, { skip: 0, limit: COMMITS_PAGE_SIZE }),
+				this.gitService.getAheadCount(this.branchName),
+			]);
 			this.commitsLoaded = commits.length;
 			this.hasMoreCommits = hasMore;
-			this.post({ type: 'commits', branchName: this.branchName, commits, focusLatest, hasMore });
+			this.post({ type: 'commits', branchName: this.branchName, commits, focusLatest, hasMore, aheadCount });
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
 		}
@@ -191,6 +195,29 @@ export class BranchHistoryPanel {
 					vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
 				}
 				break;
+			case 'openFileForEditing':
+				await this.openFileForEditing(msg.path);
+				break;
+		}
+	}
+
+	/** Opens the file's *current* working-tree copy, not the revision as of whatever commit is
+	 * selected -- a historical revision is read-only (it's git-show content, not a real file), so
+	 * "open for editing" only ever makes sense against what's actually on disk now. Checks existence
+	 * first (rather than letting vscode.open fail raw) since the file may have since been renamed or
+	 * deleted -- that's the "(if it can be)" case. */
+	private async openFileForEditing(relPath: string): Promise<void> {
+		const uri = vscode.Uri.file(path.join(this.gitService.repoRoot, relPath));
+		try {
+			await vscode.workspace.fs.stat(uri);
+		} catch {
+			void vscode.window.showInformationMessage(`GGit: "${relPath}" no longer exists in the working tree.`);
+			return;
+		}
+		try {
+			await vscode.commands.executeCommand('vscode.open', uri);
+		} catch (err) {
+			vscode.window.showErrorMessage(`GGit: Failed to open file: ${(err as Error).message}`);
 		}
 	}
 
@@ -310,6 +337,19 @@ export class BranchHistoryPanel {
 		.toolbar-btn-primary:disabled {
 			opacity: 0.5;
 			cursor: default;
+		}
+		/* Applied to the Push button (see webview/main.ts) when the branch has commits ready to
+		 * push -- same green already used for added/staged content elsewhere in GGit. */
+		.toolbar-btn-success {
+			border: 1px solid transparent;
+			/* Hardcoded rather than a theme token -- gitDecoration.addedResourceForeground is meant as
+			 * readable *text* on a dark background (so themes tend to keep it light/pastel), which looked
+			 * washed out as a solid button fill. This is a deliberately dark, high-contrast green instead. */
+			background-color: #1f883d;
+			color: #ffffff;
+		}
+		.toolbar-btn-success:hover {
+			border-color: rgba(255, 255, 255, 0.6);
 		}
 		#layout {
 			display: flex;
@@ -512,10 +552,33 @@ export class BranchHistoryPanel {
 			font-size: 0.9em;
 			white-space: nowrap;
 		}
+		.file-open-icon {
+			flex: 0 0 auto;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			width: 20px;
+			height: 20px;
+			border-radius: 4px;
+			cursor: pointer;
+			color: var(--vscode-icon-foreground, var(--vscode-foreground));
+		}
+		.file-open-icon:hover {
+			background-color: var(--vscode-toolbar-hoverBackground);
+		}
 		.stat-add { color: var(--vscode-gitDecoration-addedResourceForeground, #4b4); }
 		.stat-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #d44); margin-left: 4px; }
 		.stat-binary { color: var(--vscode-descriptionForeground); font-style: italic; }
 		.empty {
+			padding: 10px;
+			color: var(--vscode-descriptionForeground);
+			font-style: italic;
+		}
+		.loading-more-row {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			gap: 6px;
 			padding: 10px;
 			color: var(--vscode-descriptionForeground);
 			font-style: italic;

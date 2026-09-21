@@ -233,6 +233,15 @@ export class GitService {
 		}
 	}
 
+	/** How many commits `branchName` has that its upstream doesn't -- 0 if it has no upstream or is
+	 * already fully pushed. Drives the History panel's Push button turning green when there's
+	 * something to push. Same cheap for-each-ref plumbing as listLocalBranches' ahead/behind, not a
+	 * commit-walking call, so this doesn't reintroduce the unbounded-cost problem getLog just fixed. */
+	async getAheadCount(branchName: string): Promise<number> {
+		const out = (await this.git.raw(['for-each-ref', '--format=%(upstream:track)', `refs/heads/${branchName}`])).trim();
+		return Number(out.match(/ahead (\d+)/)?.[1] ?? 0);
+	}
+
 	async fetchBranch(remoteBranchName: string, remote = 'origin'): Promise<void> {
 		await this.git.fetch(remote, stripRemotePrefix(remoteBranchName, remote));
 	}
