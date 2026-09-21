@@ -12,7 +12,16 @@ export type HostMessage =
 			 * background reload (e.g. after a fetch/pull while the panel isn't necessarily even
 			 * visible), which keeps the existing sticky-selection behavior instead. */
 			focusLatest: boolean;
+			/** Whether there are more, older commits beyond this page -- drives whether the webview
+			 * requests another page as the user scrolls near the bottom. */
+			hasMore: boolean;
 	  }
+	/** A subsequent page, requested via 'loadMoreCommits' -- appended to, not replacing, what's
+	 * already rendered. */
+	| { type: 'moreCommits'; commits: CommitInfo[]; hasMore: boolean }
+	/** A 'loadMoreCommits' request failed -- resets the webview's own loading guard (so scrolling
+	 * again retries) without wiping anything already rendered, unlike the generic 'error' message. */
+	| { type: 'moreCommitsFailed' }
 	| { type: 'files'; sha: string; files: ChangedFile[] }
 	| { type: 'error'; message: string };
 
@@ -24,4 +33,7 @@ export type WebviewMessage =
 	| { type: 'runAction'; command: string }
 	| { type: 'resetHead'; sha: string; mode: 'mixed' | 'hard' }
 	| { type: 'cherryPick'; sha: string }
-	| { type: 'savePatch'; sha: string; subject: string };
+	| { type: 'savePatch'; sha: string; subject: string }
+	/** The commits pane was scrolled near its bottom and there's more to fetch (see 'commits'.hasMore
+	 * / 'moreCommits'.hasMore). */
+	| { type: 'loadMoreCommits' };

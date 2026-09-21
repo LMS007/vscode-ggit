@@ -77,7 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	// its container's activity-bar icon automatically, so setting this on just the Working Copy view
 	// is enough to badge the whole "GGit" icon.
 	const updateWorkingCopyBadge = async () => {
-		const files = await gitService.getWorkingChanges();
+		const files = await gitService.time('updateWorkingCopyBadge: getWorkingChanges', () => gitService.getWorkingChanges());
 		// Distinct paths, not rows -- a partially-staged file produces two rows (see
 		// GitService.getWorkingChanges) but is still only one changed file for this count.
 		const count = new Set(files.map(f => f.path)).size;

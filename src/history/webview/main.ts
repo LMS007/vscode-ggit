@@ -24,8 +24,11 @@ toolbarEl.addEventListener('click', event => {
 let currentFiles: ChangedFile[] = [];
 let currentCommits: CommitInfo[] = [];
 let selectedSha: string | undefined;
+let selectedRowEl: HTMLElement | undefined;
 let selectedFileIndex = -1;
 let activePane: 'commits' | 'files' = 'commits';
+let hasMoreCommits = false;
+let loadingMoreCommits = false;
 
 function escapeHtml(text: string): string {
 	return text
@@ -39,39 +42,52 @@ function renderRefBadges(refs: CommitInfo['refs']): string {
 	return refs.map(r => `<span class="ref-badge ref-badge-${r.kind}">${escapeHtml(r.name)}</span>`).join('');
 }
 
+function commitRowHtml(c: CommitInfo): string {
+	return `<div class="commit-row-wrapper${c.onBranch ? '' : ' not-on-branch'}">
+			<div class="commit-graph">
+				<div class="commit-graph-line"></div>
+				<div class="commit-graph-dot"></div>
+			</div>
+			<div class="row commit-row" data-sha="${c.hash}">
+				<div class="commit-line1">
+					<span class="commit-author">${escapeHtml(c.authorName)}</span>
+					<span class="commit-refs">${renderRefBadges(c.refs)}</span>
+					<span class="commit-date">${new Date(c.date).toLocaleDateString()}</span>
+				</div>
+				<div class="commit-line2">
+					<span class="commit-hash">${c.hash.slice(0, 7)}</span>
+					<span class="commit-title">${escapeHtml(c.message)}</span>
+				</div>
+			</div>
+		</div>`;
+}
+
 function renderCommits(commits: CommitInfo[]): void {
 	currentCommits = commits;
+	selectedRowEl = undefined;
 	if (commits.length === 0) {
 		commitsEl.innerHTML = '<div class="empty">No commits on this branch.</div>';
 		return;
 	}
-	commitsEl.innerHTML = commits
-		.map(
-			c => `<div class="commit-row-wrapper${c.onBranch ? '' : ' not-on-branch'}">
-				<div class="commit-graph">
-					<div class="commit-graph-line"></div>
-					<div class="commit-graph-dot"></div>
-				</div>
-				<div class="row commit-row" data-sha="${c.hash}">
-					<div class="commit-line1">
-						<span class="commit-author">${escapeHtml(c.authorName)}</span>
-						<span class="commit-refs">${renderRefBadges(c.refs)}</span>
-						<span class="commit-date">${new Date(c.date).toLocaleDateString()}</span>
-					</div>
-					<div class="commit-line2">
-						<span class="commit-hash">${c.hash.slice(0, 7)}</span>
-						<span class="commit-title">${escapeHtml(c.message)}</span>
-					</div>
-				</div>
-			</div>`
-		)
-		.join('');
+	commitsEl.innerHTML = commits.map(commitRowHtml).join('');
 }
 
+/** Appends a page onto what's already rendered, rather than rebuilding the whole (potentially large,
+ * after several scroll-triggered pages) list -- keeps each "load more" cheap regardless of how much
+ * has accumulated so far. */
+function appendCommits(commits: CommitInfo[]): void {
+	currentCommits = currentCommits.concat(commits);
+	commitsEl.insertAdjacentHTML('beforeend', commits.map(commitRowHtml).join(''));
+}
+
+/** Tracks the previously-selected row directly instead of scanning every row on each selection --
+ * on a branch with a lot of history loaded (several scrolled-in pages), a full querySelectorAll
+ * every time you click a different commit is real, avoidable work. */
 function highlightSelectedCommit(sha: string): void {
-	commitsEl.querySelectorAll('.row').forEach(row => {
-		row.classList.toggle('selected', row.getAttribute('data-sha') === sha);
-	});
+	selectedRowEl?.classList.remove('selected');
+	const row = commitsEl.querySelector<HTMLElement>(`.row[data-sha="${sha}"]`);
+	row?.classList.add('selected');
+	selectedRowEl = row ?? undefined;
 }
 
 function renderFileStats(f: ChangedFile): string {
@@ -264,6 +280,9 @@ window.addEventListener('message', event => {
 	const message = event.data as HostMessage;
 	switch (message.type) {
 		case 'commits': {
+			hasMoreCommits = message.hasMore;
+			loadingMoreCommits = false;
+			commitsEl.scrollTop = 0;
 			renderCommits(message.commits);
 			if (message.commits.length === 0) {
 				filesEl.innerHTML = '<div class="empty">Select a commit to see its changed files.</div>';
@@ -287,6 +306,14 @@ window.addEventListener('message', event => {
 			}
 			break;
 		}
+		case 'moreCommits':
+			hasMoreCommits = message.hasMore;
+			loadingMoreCommits = false;
+			appendCommits(message.commits);
+			break;
+		case 'moreCommitsFailed':
+			loadingMoreCommits = false;
+			break;
 		case 'files':
 			if (message.sha === selectedSha) {
 				renderFiles(message.files);
@@ -297,6 +324,23 @@ window.addEventListener('message', event => {
 			break;
 	}
 });
+
+const LOAD_MORE_THRESHOLD_PX = 300;
+
+commitsEl.addEventListener(
+	'scroll',
+	() => {
+		if (!hasMoreCommits || loadingMoreCommits) {
+			return;
+		}
+		const distanceFromBottom = commitsEl.scrollHeight - commitsEl.scrollTop - commitsEl.clientHeight;
+		if (distanceFromBottom <= LOAD_MORE_THRESHOLD_PX) {
+			loadingMoreCommits = true;
+			vscodeApi.postMessage({ type: 'loadMoreCommits' });
+		}
+	},
+	{ passive: true }
+);
 
 const MIN_PANE_WIDTH_PX = 120;
 let dragging = false;

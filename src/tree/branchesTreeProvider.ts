@@ -21,8 +21,10 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 		if (element) {
 			return element.kind === 'folder' ? element.children : [];
 		}
-		const branches = await this.gitService.listLocalBranches();
-		return sortTree(buildBranchTree(branches, b => b.name), PINNED_BRANCHES);
+		return this.gitService.time('BranchesTreeProvider.getChildren', async () => {
+			const branches = await this.gitService.listLocalBranches();
+			return sortTree(buildBranchTree(branches, b => b.name), PINNED_BRANCHES);
+		});
 	}
 
 	getTreeItem(node: BranchTreeNode<BranchInfo>): vscode.TreeItem {

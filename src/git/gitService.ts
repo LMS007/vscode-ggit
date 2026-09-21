@@ -36,6 +36,19 @@ export class GitService {
 		this.logger?.(message);
 	}
 
+	/** Times an async block and logs it to the "GGit" output channel -- added specifically to
+	 * diagnose Remote-SSH slowness (each view load, and the git spawns underneath it, is a lot more
+	 * exposed to network/disk latency on the remote host than the same work is locally), so this can
+	 * be dropped anywhere views seem slow to actually see where time goes, instead of guessing. */
+	async time<T>(label: string, fn: () => Promise<T>): Promise<T> {
+		const start = Date.now();
+		try {
+			return await fn();
+		} finally {
+			this.logger?.(`[timing] ${label}: ${Date.now() - start}ms`);
+		}
+	}
+
 	async isGitRepository(): Promise<boolean> {
 		return this.git.checkIsRepo();
 	}
@@ -61,9 +74,11 @@ export class GitService {
 
 	async listLocalBranches(): Promise<BranchInfo[]> {
 		const [summary, trackingOut, worktreeOwners] = await Promise.all([
-			this.git.branchLocal(),
-			this.git.raw(['for-each-ref', `--format=%(refname:short)${FIELD_SEP}%(upstream:track)`, 'refs/heads']),
-			this.getBranchWorktreeOwners(),
+			this.time('listLocalBranches: branchLocal()', () => this.git.branchLocal()),
+			this.time('listLocalBranches: for-each-ref', () =>
+				this.git.raw(['for-each-ref', `--format=%(refname:short)${FIELD_SEP}%(upstream:track)`, 'refs/heads'])
+			),
+			this.time('listLocalBranches: getBranchWorktreeOwners', () => this.getBranchWorktreeOwners()),
 		]);
 		const tracking = new Map<string, { ahead?: number; behind?: number }>();
 		for (const line of trackingOut.split('\n')) {
@@ -248,39 +263,40 @@ export class GitService {
 
 	/** Includes the branch's upstream too (if it has one) so commits it's behind on are still shown
 	 * — just tagged `onBranch: false` so the caller can dim them — rather than silently left out. */
-	async getLog(branchName: string): Promise<CommitInfo[]> {
-		const upstream = await this.getUpstreamBranch(branchName);
-		this.logger?.(`getLog(${branchName}): upstream=${upstream ?? '(none)'}`);
-
-		const runLog = (refs: string[]) =>
-			this.git.raw(['log', ...refs, `--pretty=format:${LOG_FORMAT}`, '--decorate=short', '--']);
-
-		// getUpstreamBranch already verifies the upstream ref resolves before handing it back, but this
-		// is a second, belt-and-suspenders line of defense: if git still rejects the combined revision
-		// list for some other reason, fall back to a plain branch-only log instead of surfacing a hard
-		// error in the History panel — a branch failing to open its history entirely is worse than it
-		// briefly missing the dimmed "behind" commits.
-		const logPromise = (async () => {
-			if (!upstream) {
-				return runLog([branchName]);
-			}
-			try {
-				return await runLog([branchName, upstream]);
-			} catch (err) {
-				this.logger?.(
-					`getLog(${branchName}): log with upstream "${upstream}" failed (${(err as Error).message.trim()}) — retrying without it`
-				);
-				return runLog([branchName]);
-			}
-		})();
-
-		const [out, branchHashesOut] = await Promise.all([logPromise, this.git.raw(['rev-list', branchName])]);
-		const branchHashes = new Set(branchHashesOut.split('\n').filter(Boolean));
-
+	/** One page of a branch's own commit history, newest first. Paginated via skip/limit rather than
+	 * ever fetching the whole history at once -- on a large, long-lived repo that can mean tens of
+	 * thousands of commits, and rendering that many rows in the History webview (not just the git call
+	 * itself) is what was actually behind multi-second-to-minute loads and even laggy hover, confirmed
+	 * against a real large monorepo both over SSH and running locally against the same repo (ruling out
+	 * network latency as the cause). Fetches limit+1 to cheaply know whether there's a next page
+	 * without a separate, equally expensive count query.
+	 *
+	 * This also drops the previous "combined branch+upstream log, dimming commits only reachable via
+	 * upstream" behavior -- that required a second, fully unbounded `git rev-list branchName` call just
+	 * to tag which commits belonged to the branch itself, which on a huge repo was its own multi-second
+	 * cost on every single load. `onBranch` is now always true; a branch's ahead/behind *counts* are
+	 * still shown elsewhere (Branches view) via a cheap for-each-ref call, just not interleaved,
+	 * dimmed commits in this list. */
+	async getLog(branchName: string, options: { skip: number; limit: number }): Promise<{ commits: CommitInfo[]; hasMore: boolean }> {
+		const { skip, limit } = options;
+		const out = await this.time(`getLog(${branchName}, skip=${skip}, limit=${limit}): git log`, () =>
+			this.git.raw([
+				'log',
+				branchName,
+				`--skip=${skip}`,
+				`--max-count=${limit + 1}`,
+				`--pretty=format:${LOG_FORMAT}`,
+				'--decorate=short',
+				'--',
+			])
+		);
 		if (!out.trim()) {
-			return [];
+			return { commits: [], hasMore: false };
 		}
-		return out.split('\n').map(line => {
+		const lines = out.split('\n');
+		const hasMore = lines.length > limit;
+		const pageLines = hasMore ? lines.slice(0, limit) : lines;
+		const commits = pageLines.map(line => {
 			const [hash, parents, authorName, authorEmail, date, message, refsField] = line.split(FIELD_SEP);
 			return {
 				hash,
@@ -290,9 +306,11 @@ export class GitService {
 				date,
 				message,
 				refs: parseRefs(refsField ?? ''),
-				onBranch: branchHashes.has(hash),
+				onBranch: true,
 			};
 		});
+		this.logger?.(`getLog(${branchName}, skip=${skip}, limit=${limit}): ${commits.length} commit(s), hasMore=${hasMore}`);
+		return { commits, hasMore };
 	}
 
 	/** The commit's first parent, or git's well-known empty-tree SHA for a root commit. */
@@ -322,11 +340,13 @@ export class GitService {
 	}
 
 	async getCommitFiles(sha: string): Promise<ChangedFile[]> {
-		const base = await this.getDiffBase(sha);
-		const [nameStatusOut, numstatOut] = await Promise.all([
-			this.git.raw(['diff', '--name-status', '-M', base, sha]),
-			this.git.raw(['diff', '--numstat', '-M', base, sha]),
-		]);
+		const base = await this.time(`getCommitFiles(${sha}): getDiffBase`, () => this.getDiffBase(sha));
+		const [nameStatusOut, numstatOut] = await this.time(`getCommitFiles(${sha}): diff name-status + numstat`, () =>
+			Promise.all([
+				this.git.raw(['diff', '--name-status', '-M', base, sha]),
+				this.git.raw(['diff', '--numstat', '-M', base, sha]),
+			])
+		);
 		if (!nameStatusOut.trim()) {
 			return [];
 		}

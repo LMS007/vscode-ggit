@@ -13,7 +13,7 @@ export class StashesTreeProvider implements vscode.TreeDataProvider<StashInfo> {
 	}
 
 	getChildren(element?: StashInfo): Thenable<StashInfo[]> {
-		return element ? Promise.resolve([]) : this.gitService.listStashes();
+		return element ? Promise.resolve([]) : this.gitService.time('StashesTreeProvider.getChildren', () => this.gitService.listStashes());
 	}
 
 	getTreeItem(stash: StashInfo): vscode.TreeItem {

@@ -45,7 +45,9 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		if (element) {
 			return [];
 		}
-		const files = await this.gitService.getWorkingChanges();
+		const files = await this.gitService.time('WorkingCopyTreeProvider.getChildren: getWorkingChanges', () =>
+			this.gitService.getWorkingChanges()
+		);
 		// Sorted by path first — deliberately not re-grouped by staged/unstaged, so checking a box
 		// doesn't reshuffle the list out from under you — then staged-before-unstaged only to give a
 		// deterministic order to the two rows a split (partially-staged) path produces.

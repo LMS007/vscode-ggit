@@ -7,6 +7,10 @@ import { HostMessage, WebviewMessage } from './protocol';
 /** Shared across every History panel instance/reload — not scoped to a single webview session. */
 const SPLIT_STATE_KEY = 'ggit.historyPanel.commitsSplitPercent';
 
+/** Commits per page -- see GitService.getLog. Small enough that even a page near the end of a huge,
+ * deeply-diverged branch's history stays fast; large enough that scrolling doesn't feel choppy. */
+const COMMITS_PAGE_SIZE = 100;
+
 /** Mirrors the Branches toolbar/sidebar Actions view — these always act on the currently checked-out
  * branch, not necessarily the one this panel happens to be showing history for. The trailing three
  * (stash apply/save, commit) mirror Working Copy's own toolbar buttons instead — same commands, same
@@ -34,6 +38,11 @@ export class BranchHistoryPanel {
 	private readonly disposables: vscode.Disposable[] = [];
 	private branchName: string;
 	private ready = false;
+	// Pagination state for the currently-loaded branch -- reset on every fresh loadCommits (branch
+	// switch, open, or reveal), advanced by loadMoreCommits as the webview scrolls.
+	private commitsLoaded = 0;
+	private hasMoreCommits = false;
+	private loadingMoreCommits = false;
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -89,10 +98,45 @@ export class BranchHistoryPanel {
 			return;
 		}
 		try {
-			const commits = await this.gitService.getLog(this.branchName);
-			this.post({ type: 'commits', branchName: this.branchName, commits, focusLatest });
+			const { commits, hasMore } = await this.gitService.getLog(this.branchName, { skip: 0, limit: COMMITS_PAGE_SIZE });
+			this.commitsLoaded = commits.length;
+			this.hasMoreCommits = hasMore;
+			this.post({ type: 'commits', branchName: this.branchName, commits, focusLatest, hasMore });
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
+		}
+	}
+
+	/** Requested by the webview when the commits pane is scrolled near its bottom. Guarded against
+	 * overlapping requests (a fast scroll can fire this more than once before the first reply lands)
+	 * and against a branch switch racing in while a page is in flight -- either would otherwise risk
+	 * appending a stale page's commits onto the wrong branch's list. */
+	private async loadMoreCommits(): Promise<void> {
+		if (!this.hasMoreCommits || this.loadingMoreCommits) {
+			return;
+		}
+		this.loadingMoreCommits = true;
+		const branchAtRequestTime = this.branchName;
+		try {
+			const { commits, hasMore } = await this.gitService.getLog(this.branchName, {
+				skip: this.commitsLoaded,
+				limit: COMMITS_PAGE_SIZE,
+			});
+			if (branchAtRequestTime !== this.branchName) {
+				return;
+			}
+			this.commitsLoaded += commits.length;
+			this.hasMoreCommits = hasMore;
+			this.post({ type: 'moreCommits', commits, hasMore });
+		} catch (err) {
+			// Not posted as a webview 'error' -- that wipes the whole commits pane, which would throw
+			// away an already-successfully-rendered first page just because a *later* page failed.
+			// hasMoreCommits/commitsLoaded are left untouched, so scrolling again just retries the same
+			// page instead of needing dedicated retry UI.
+			vscode.window.showErrorMessage(`GGit: Failed to load more commits: ${(err as Error).message}`);
+			this.post({ type: 'moreCommitsFailed' });
+		} finally {
+			this.loadingMoreCommits = false;
 		}
 	}
 
@@ -101,6 +145,9 @@ export class BranchHistoryPanel {
 			case 'ready':
 				this.ready = true;
 				await this.loadCommits(true);
+				break;
+			case 'loadMoreCommits':
+				await this.loadMoreCommits();
 				break;
 			case 'selectCommit':
 				try {

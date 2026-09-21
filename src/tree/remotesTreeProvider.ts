@@ -17,8 +17,10 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 		if (element) {
 			return element.kind === 'folder' ? element.children : [];
 		}
-		const branches = await this.gitService.listRemoteBranches('origin');
-		return sortTree(buildBranchTree(branches, b => stripRemotePrefix(b.name)));
+		return this.gitService.time('RemotesTreeProvider.getChildren', async () => {
+			const branches = await this.gitService.listRemoteBranches('origin');
+			return sortTree(buildBranchTree(branches, b => stripRemotePrefix(b.name)));
+		});
 	}
 
 	getTreeItem(node: BranchTreeNode<RemoteBranchInfo>): vscode.TreeItem {
