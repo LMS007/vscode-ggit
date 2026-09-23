@@ -47,7 +47,8 @@ function updatePushButton(remotes: string[], hasUpstream: boolean, aheadCount: n
 
 /** Toggles the toolbar's remote dropdown against the purple "Add Remote" button next to it -- with
  * no remotes configured, an empty/disabled dropdown is a dead end, so that state gets a clickable
- * way out instead. Both start `hidden` in the HTML; this is what decides which one actually shows. */
+ * way out instead. Both start `hidden` in the HTML; this is what decides which one actually shows
+ * (or, with exactly one remote, that neither does -- see below). */
 function renderRemoteSelect(remotes: string[], selectedRemote: string | undefined): void {
 	if (remotes.length === 0) {
 		if (remoteSelectEl) {
@@ -64,7 +65,11 @@ function renderRemoteSelect(remotes: string[], selectedRemote: string | undefine
 	if (!remoteSelectEl) {
 		return;
 	}
-	remoteSelectEl.hidden = false;
+	// With only one remote there's nothing to actually choose -- Push/Publish/Fetch/Pull/Sync all
+	// already default to it on their own (see pickDefaultRemote/pickRemote in gitActions.ts), so a
+	// single-option dropdown would just be clutter. Still kept populated even while hidden, so it's
+	// ready to reappear correctly the moment a second remote shows up.
+	remoteSelectEl.hidden = remotes.length === 1;
 	remoteSelectEl.innerHTML = remotes
 		.map(r => `<option value="${escapeHtml(r)}"${r === selectedRemote ? ' selected' : ''}>${escapeHtml(r)}</option>`)
 		.join('');

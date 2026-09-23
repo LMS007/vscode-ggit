@@ -269,9 +269,16 @@ export class GitService {
 		await this.git.pull(remote, branch);
 	}
 
-	/** Pushes an already-tracked branch to its upstream. */
-	async pushBranch(branchName: string, remote: string): Promise<void> {
-		await this.git.push(remote, branchName);
+	/** Pushes an already-tracked branch to its upstream. `--force-with-lease` (not a blunt `--force`)
+	 * when forcing -- refuses if the remote ref moved since your last fetch of it, so this can't
+	 * silently clobber a push someone else made in the meantime the way plain `--force` could. */
+	async pushBranch(branchName: string, remote: string, options?: { force?: boolean }): Promise<void> {
+		const args = ['push'];
+		if (options?.force) {
+			args.push('--force-with-lease');
+		}
+		args.push(remote, branchName);
+		await this.git.raw(args);
 	}
 
 	/** Pushes a never-before-published local branch and sets it up to track the new remote branch. */

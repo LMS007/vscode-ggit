@@ -72,6 +72,36 @@ async function pickRemote(gitService: GitService, branchName: string): Promise<s
 	});
 }
 
+/** Git's own message for a push rejected because the remote has commits the local branch doesn't --
+ * distinct from other push failures (auth, network, ...), which should still just surface as a
+ * normal error rather than offering to force. */
+function isNonFastForwardRejection(err: Error): boolean {
+	return /\[rejected\]/.test(err.message) && /non-fast-forward|fetch first/i.test(err.message);
+}
+
+/** Tries a normal push first; only on a non-fast-forward rejection does this escalate to a second,
+ * explicit force-push confirmation -- same "try safe first, confirm before escalating" pattern as
+ * deleteLocalBranch's force-delete path below. Keeps the common case (a push that just succeeds)
+ * free of any extra dialog. */
+async function pushWithForceEscalation(gitService: GitService, branchName: string, remote: string): Promise<void> {
+	try {
+		await gitService.pushBranch(branchName, remote);
+	} catch (err) {
+		if (!isNonFastForwardRejection(err as Error)) {
+			throw err;
+		}
+		const forceConfirmed = await vscode.window.showWarningMessage(
+			`Push rejected: the remote has commits "${branchName}" doesn't have. Force push anyway? This can overwrite them.`,
+			{ modal: true },
+			'Force Push'
+		);
+		if (forceConfirmed !== 'Force Push') {
+			return;
+		}
+		await gitService.pushBranch(branchName, remote, { force: true });
+	}
+}
+
 /** If the current branch is already published, pushes it to its actual tracked remote (not
  * necessarily "origin" -- see splitRemoteBranch); otherwise publishes + tracks it against
  * `preferredRemote` if given (the History tab's own remote dropdown already resolved that choice,
@@ -83,7 +113,7 @@ export async function pushCurrentBranch(gitService: GitService, preferredRemote?
 
 	const upstream = await gitService.getUpstreamBranch(current);
 	if (upstream) {
-		await gitService.pushBranch(current, splitRemoteBranch(upstream).remote);
+		await pushWithForceEscalation(gitService, current, splitRemoteBranch(upstream).remote);
 		return;
 	}
 
@@ -113,7 +143,7 @@ export async function syncCurrentBranch(gitService: GitService, preferredRemote?
 
 	const upstream = await gitService.getUpstreamBranch(current);
 	if (upstream) {
-		await gitService.pushBranch(current, splitRemoteBranch(upstream).remote);
+		await pushWithForceEscalation(gitService, current, splitRemoteBranch(upstream).remote);
 	} else {
 		const { remote, branch } = splitRemoteBranch(target);
 		await gitService.publishBranch(current, branch, remote);
