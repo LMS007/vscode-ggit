@@ -99,13 +99,24 @@ export class BranchHistoryPanel {
 			return;
 		}
 		try {
-			const [{ commits, hasMore }, aheadCount] = await Promise.all([
+			const [{ commits, hasMore }, aheadCount, upstream, hasRemote] = await Promise.all([
 				this.gitService.getLog(this.branchName, { skip: 0, limit: COMMITS_PAGE_SIZE }),
 				this.gitService.getAheadCount(this.branchName),
+				this.gitService.getUpstreamBranch(this.branchName),
+				this.gitService.hasRemote(),
 			]);
 			this.commitsLoaded = commits.length;
 			this.hasMoreCommits = hasMore;
-			this.post({ type: 'commits', branchName: this.branchName, commits, focusLatest, hasMore, aheadCount });
+			this.post({
+				type: 'commits',
+				branchName: this.branchName,
+				commits,
+				focusLatest,
+				hasMore,
+				aheadCount,
+				hasUpstream: upstream !== undefined,
+				hasRemote,
+			});
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
 		}
@@ -420,6 +431,20 @@ export class BranchHistoryPanel {
 			 * explicitly compete for it -- which is what made the green look like it was fading to grey
 			 * on hover despite this block already overriding border-color correctly. */
 			background-color: #1f883d;
+			border-color: rgba(255, 255, 255, 0.6);
+		}
+		/* Applied to the Push button instead when the branch has never been pushed (no upstream) but
+		 * a remote to publish to does exist -- "Publish" is a meaningfully different action from
+		 * "Push" (it also sets up tracking), so it gets its own color rather than reusing green. */
+		.toolbar-btn-publish {
+			border: 1px solid transparent;
+			background-color: #8250df;
+			color: #ffffff;
+		}
+		.toolbar-btn-publish:hover {
+			/* Same reasoning as .toolbar-btn-success:hover above -- without this, .toolbar-btn:hover's
+			 * generic grey background-color would win on hover and the purple would flash grey. */
+			background-color: #8250df;
 			border-color: rgba(255, 255, 255, 0.6);
 		}
 		#searchBar {

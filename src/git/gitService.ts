@@ -242,6 +242,15 @@ export class GitService {
 		return Number(out.match(/ahead (\d+)/)?.[1] ?? 0);
 	}
 
+	/** Whether `remote` is configured for this repo at all -- distinct from "has no upstream": a
+	 * branch can lack an upstream while origin still exists (never pushed) or while origin doesn't
+	 * exist at all (nothing to publish to yet, e.g. right after `git init`). Drives the History
+	 * panel's Push button choosing between a disabled-looking "Publish" and a clickable purple one. */
+	async hasRemote(remote = 'origin'): Promise<boolean> {
+		const remotes = await this.git.getRemotes();
+		return remotes.some(r => r.name === remote);
+	}
+
 	async fetchBranch(remoteBranchName: string, remote = 'origin'): Promise<void> {
 		await this.git.fetch(remote, stripRemotePrefix(remoteBranchName, remote));
 	}

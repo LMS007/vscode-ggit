@@ -15,6 +15,29 @@ const toolbarEl = document.getElementById('toolbar')!;
 const commitContextMenuEl = document.getElementById('commitContextMenu')!;
 const fileContextMenuEl = document.getElementById('fileContextMenu')!;
 const pushButtonEl = toolbarEl.querySelector<HTMLElement>('.toolbar-btn[data-command="ggit.push"]');
+const pushButtonLabelEl = pushButtonEl?.querySelector<HTMLElement>('.toolbar-btn-label');
+
+/** Four states, driven by the same facts the "commits" message already carries:
+ *  - no "origin" configured at all -> grey "Publish" (nowhere to publish to yet)
+ *  - origin exists, branch never pushed (no upstream) -> purple "Publish"
+ *  - origin exists, upstream exists, commits ahead -> green "Push"
+ *  - origin exists, upstream exists, nothing ahead -> grey "Push"
+ * Label text (not just color) changes because "Push" and "Publish" really are different actions --
+ * publishing also sets up the new branch's tracking (see gitActions.pushCurrentBranch) -- even though
+ * both are wired to the same 'runAction'/ggit.push command underneath. */
+function updatePushButton(hasRemote: boolean, hasUpstream: boolean, aheadCount: number): void {
+	if (!pushButtonEl) {
+		return;
+	}
+	const label = hasRemote && hasUpstream ? 'Push' : 'Publish';
+	pushButtonEl.classList.toggle('toolbar-btn-success', hasRemote && hasUpstream && aheadCount > 0);
+	pushButtonEl.classList.toggle('toolbar-btn-publish', hasRemote && !hasUpstream);
+	if (pushButtonLabelEl) {
+		pushButtonLabelEl.textContent = label;
+	}
+	pushButtonEl.title = label;
+	pushButtonEl.setAttribute('aria-label', label);
+}
 const searchInput = document.getElementById('searchInput') as HTMLInputElement;
 const searchStatusEl = document.getElementById('searchStatus')!;
 const searchClearButton = document.getElementById('searchClearButton') as HTMLButtonElement;
@@ -516,7 +539,7 @@ window.addEventListener('message', event => {
 			searchInput.value = '';
 			searchStatusEl.textContent = '';
 			searchClearButton.hidden = true;
-			pushButtonEl?.classList.toggle('toolbar-btn-success', message.aheadCount > 0);
+			updatePushButton(message.hasRemote, message.hasUpstream, message.aheadCount);
 			commitsEl.scrollTop = 0;
 			renderCommits(message.commits);
 			if (message.commits.length === 0) {

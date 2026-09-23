@@ -18,6 +18,13 @@ export type HostMessage =
 			/** How many commits are ready to push -- 0 means nothing to push. Drives the toolbar's
 			 * Push button turning green. */
 			aheadCount: number;
+			/** Whether the branch has an upstream configured at all -- false means it's never been
+			 * pushed, which is when the Push button becomes "Publish" instead. */
+			hasUpstream: boolean;
+			/** Whether "origin" is configured for this repo -- false (e.g. right after `git init`,
+			 * before `git remote add origin ...`) means there's nowhere to publish to yet, so
+			 * "Publish" shows disabled-grey instead of the normal publish purple. */
+			hasRemote: boolean;
 	  }
 	/** A subsequent page, requested via 'loadMoreCommits' -- appended to, not replacing, what's
 	 * already rendered. */
