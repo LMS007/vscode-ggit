@@ -167,6 +167,20 @@ export class GitService {
 			.map(name => ({ name }));
 	}
 
+	/** Every remote configured for this repo (e.g. ["origin", "upstream"]) -- drives the Remotes view
+	 * showing one top-level folder per remote instead of assuming "origin" is the only one. */
+	async listRemotes(): Promise<string[]> {
+		const remotes = await this.git.getRemotes();
+		return remotes.map(r => r.name);
+	}
+
+	/** `git remote add` -- validated by git itself (a duplicate name, an obviously malformed URL,
+	 * etc. all surface as a raw git error), same convention as createBranch/renameBranch above rather
+	 * than this extension trying to re-implement git's own name/URL rules. */
+	async addRemote(name: string, url: string): Promise<void> {
+		await this.git.raw(['remote', 'add', name, url]);
+	}
+
 	/** Returns the current branch name, or undefined if HEAD is detached. */
 	async getCurrentBranch(): Promise<string | undefined> {
 		const name = (await this.git.raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
@@ -186,9 +200,12 @@ export class GitService {
 		await this.git.checkout(name);
 	}
 
-	/** Switches to the local branch tracking this remote branch, creating one (after fetching) if it doesn't exist yet. */
-	async checkoutRemoteBranch(remoteBranchName: string, remote = 'origin'): Promise<void> {
-		const localName = stripRemotePrefix(remoteBranchName, remote);
+	/** Switches to the local branch tracking this remote branch, creating one (after fetching) if it
+	 * doesn't exist yet. The remote to fetch from is read off `remoteBranchName` itself (its leading
+	 * "remote/" segment) rather than assumed to be "origin" -- the Remotes view can show branches from
+	 * any configured remote now, not just origin. */
+	async checkoutRemoteBranch(remoteBranchName: string): Promise<void> {
+		const { remote, branch: localName } = splitRemoteBranch(remoteBranchName);
 		const locals = await this.listLocalBranches();
 		if (locals.some(b => b.name === localName)) {
 			await this.checkoutBranch(localName);
@@ -247,16 +264,18 @@ export class GitService {
 	 * exist at all (nothing to publish to yet, e.g. right after `git init`). Drives the History
 	 * panel's Push button choosing between a disabled-looking "Publish" and a clickable purple one. */
 	async hasRemote(remote = 'origin'): Promise<boolean> {
-		const remotes = await this.git.getRemotes();
-		return remotes.some(r => r.name === remote);
+		const remotes = await this.listRemotes();
+		return remotes.includes(remote);
 	}
 
-	async fetchBranch(remoteBranchName: string, remote = 'origin'): Promise<void> {
-		await this.git.fetch(remote, stripRemotePrefix(remoteBranchName, remote));
+	async fetchBranch(remoteBranchName: string): Promise<void> {
+		const { remote, branch } = splitRemoteBranch(remoteBranchName);
+		await this.git.fetch(remote, branch);
 	}
 
-	async pullBranch(remoteBranchName: string, remote = 'origin'): Promise<void> {
-		await this.git.pull(remote, stripRemotePrefix(remoteBranchName, remote));
+	async pullBranch(remoteBranchName: string): Promise<void> {
+		const { remote, branch } = splitRemoteBranch(remoteBranchName);
+		await this.git.pull(remote, branch);
 	}
 
 	/** Pushes an already-tracked branch to its upstream. */
@@ -733,9 +752,20 @@ function mapStatusCode(code: string): FileStatus {
 	}
 }
 
-/** Remote branch names include the remote prefix (e.g. "origin/alice/feature-x"); strips it to get the bare branch name. */
-export function stripRemotePrefix(remoteBranchName: string, remote = 'origin'): string {
-	return remoteBranchName.startsWith(`${remote}/`) ? remoteBranchName.slice(remote.length + 1) : remoteBranchName;
+/** Remote branch names always start with their own remote's name (e.g. "origin/main",
+ * "upstream/alice/feature-x") -- splits off that leading segment. No "which remote" parameter
+ * needed (and none should be assumed): with more than one remote configured, a caller hardcoding
+ * "origin" as a default would silently mis-parse anything from another remote. */
+export function splitRemoteBranch(remoteBranchName: string): { remote: string; branch: string } {
+	const slashIndex = remoteBranchName.indexOf('/');
+	if (slashIndex === -1) {
+		return { remote: '', branch: remoteBranchName };
+	}
+	return { remote: remoteBranchName.slice(0, slashIndex), branch: remoteBranchName.slice(slashIndex + 1) };
+}
+
+export function stripRemotePrefix(remoteBranchName: string): string {
+	return splitRemoteBranch(remoteBranchName).branch;
 }
 
 /** Parses `%D` ref-decoration output, e.g. "HEAD -> main, origin/main, origin/HEAD, tag: v1.0". */

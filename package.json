@@ -131,6 +131,11 @@
         "icon": "$(search)"
       },
       {
+        "command": "ggit.addRemote",
+        "title": "GGit: Add Remote",
+        "icon": "$(add)"
+      },
+      {
         "command": "ggit.stageAll",
         "title": "GGit: Stage All",
         "icon": "$(add)"
@@ -308,9 +313,14 @@
           "group": "navigation@0"
         },
         {
-          "command": "ggit.refresh",
+          "command": "ggit.addRemote",
           "when": "view == ggitRemotes",
           "group": "navigation@1"
+        },
+        {
+          "command": "ggit.refresh",
+          "when": "view == ggitRemotes",
+          "group": "navigation@2"
         },
         {
           "command": "ggit.rebaseContinue",

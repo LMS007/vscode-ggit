@@ -34,10 +34,17 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 			return element.kind === 'folder' ? element.children : [];
 		}
 		return this.gitService.time('RemotesTreeProvider.getChildren', async () => {
-			const branches = await this.gitService.listRemoteBranches('origin');
+			const remoteNames = await this.gitService.listRemotes();
+			const branchesByRemote = await Promise.all(remoteNames.map(name => this.gitService.listRemoteBranches(name)));
+			const branches = branchesByRemote.flat();
 			const term = this.filterTerm.toLowerCase();
 			const filtered = term ? branches.filter(b => stripRemotePrefix(b.name).toLowerCase().includes(term)) : branches;
-			return sortTree(buildBranchTree(filtered, b => stripRemotePrefix(b.name)));
+			// Each branch's own `name` already carries its remote prefix (e.g. "origin/main" vs.
+			// "upstream/main") -- building the tree from the full name rather than the
+			// prefix-stripped one is what turns that leading segment into its own top-level folder,
+			// so a repo with multiple remotes gets one folder per remote instead of a single flat
+			// (and ambiguous, if two remotes shared a branch name) list.
+			return sortTree(buildBranchTree(filtered, b => b.name));
 		});
 	}
 
@@ -54,8 +61,15 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 				this.isFiltered ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed
 			);
 			item.id = this.isFiltered ? `${node.id}#filtered` : node.id;
-			item.iconPath = new vscode.ThemeIcon('folder');
-			item.contextValue = 'remoteBranchFolder';
+			// A top-level folder (no "/" in its id) is a remote itself, e.g. "origin" -- everything
+			// nested under it is that remote's own branch-path grouping, same as before. Distinct icon
+			// and contextValue so a remote reads as a different kind of thing than a plain path folder.
+			const isRemoteRoot = !node.id.includes('/');
+			// 'repo' (not 'cloud') for the root -- leaf branches below already use 'cloud', so reusing
+			// it here would make a remote's own row look like just another branch instead of the thing
+			// that contains them.
+			item.iconPath = new vscode.ThemeIcon(isRemoteRoot ? 'repo' : 'folder');
+			item.contextValue = isRemoteRoot ? 'remoteRoot' : 'remoteBranchFolder';
 			return item;
 		}
 		const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.None);

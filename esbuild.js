@@ -119,7 +119,26 @@ async function main() {
 		],
 	});
 
-	const contexts = [extensionCtx, webviewCtx, commitFilesWebviewCtx, createBranchWebviewCtx, commitWebviewCtx];
+	// The add-remote form is a fifth, independent webview (a simple form, no commit browser), so it
+	// gets its own bundle rather than sharing another panel's.
+	const addRemoteWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/remote/addRemoteWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/addRemoteWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
+	const contexts = [extensionCtx, webviewCtx, commitFilesWebviewCtx, createBranchWebviewCtx, commitWebviewCtx, addRemoteWebviewCtx];
 
 	if (watch) {
 		await Promise.all(contexts.map(ctx => ctx.watch()));

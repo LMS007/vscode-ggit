@@ -5,6 +5,7 @@ import { CommitLauncherViewProvider } from './commit/commitLauncherView';
 import { CommitPanel } from './commit/commitPanel';
 import { BranchHistoryPanel } from './history/branchHistoryPanel';
 import { CommitFilesPanel } from './history/commitFilesPanel';
+import { AddRemotePanel } from './remote/addRemotePanel';
 import { openDiffForWorkingChange } from './diff/openDiff';
 import { GGitShowContentProvider, GGIT_SHOW_SCHEME } from './diff/showContentProvider';
 import {
@@ -209,6 +210,10 @@ export function activate(context: vscode.ExtensionContext): void {
 			});
 			inputBox.onDidHide(() => inputBox.dispose());
 			inputBox.show();
+		}),
+
+		vscode.commands.registerCommand('ggit.addRemote', () => {
+			AddRemotePanel.createOrShow(context, gitService, refreshAll);
 		}),
 
 		vscode.commands.registerCommand('ggit.createBranch', () => {
