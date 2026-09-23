@@ -2,22 +2,36 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { GGIT_SHOW_SCHEME, INDEX_REF } from '../diff/showContentProvider';
-import { GitService, stripRemotePrefix } from './gitService';
+import { GitService, splitRemoteBranch } from './gitService';
 import { WorkingChangeFile } from './types';
 
-/** Resolves which remote branch an action should target: the current branch's tracked
- * upstream if it has one, otherwise prompts with a picker. Undefined if there's no upstream
- * and the user cancels the picker. */
-async function resolveTargetRemoteBranch(gitService: GitService, current: string): Promise<string | undefined> {
+/** Picks a remote with no prompt at all: `preferredRemote` if given (the History tab's own remote
+ * dropdown already resolved that choice), else "origin" if configured, else whichever remote happens
+ * to be first. Undefined only when no remote is configured at all. */
+async function pickDefaultRemote(gitService: GitService, preferredRemote?: string): Promise<string | undefined> {
+	const remotes = await gitService.listRemotes();
+	if (preferredRemote && remotes.includes(preferredRemote)) {
+		return preferredRemote;
+	}
+	return remotes.includes('origin') ? 'origin' : remotes[0];
+}
+
+/** Resolves which remote branch an action should target: the current branch's tracked upstream if
+ * it has one; otherwise a default remote (see pickDefaultRemote) paired with the same-named branch --
+ * no prompt. This used to show a QuickPick of every branch on every remote when there was no
+ * upstream; that's gone in favor of always just picking something sensible. If the guessed branch
+ * doesn't actually exist on the chosen remote, the fetch/pull itself fails with a clear git error
+ * instead of this asking first. */
+async function resolveTargetRemoteBranch(gitService: GitService, current: string, preferredRemote?: string): Promise<string> {
 	const upstream = await gitService.getUpstreamBranch(current);
 	if (upstream) {
 		return upstream;
 	}
-	const remoteBranches = await gitService.listRemoteBranches('origin');
-	return vscode.window.showQuickPick(
-		remoteBranches.map(b => b.name),
-		{ placeHolder: `"${current}" has no upstream — pick a remote branch`, ignoreFocusOut: true }
-	);
+	const remote = await pickDefaultRemote(gitService, preferredRemote);
+	if (!remote) {
+		throw new Error('No remote configured -- add one from the Remotes view first.');
+	}
+	return `${remote}/${current}`;
 }
 
 function requireCurrentBranch(current: string | undefined): asserts current is string {
@@ -26,62 +40,83 @@ function requireCurrentBranch(current: string | undefined): asserts current is s
 	}
 }
 
-export async function fetchWithPicker(gitService: GitService): Promise<void> {
+export async function fetchCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
 	const current = await gitService.getCurrentBranch();
 	requireCurrentBranch(current);
-	const target = await resolveTargetRemoteBranch(gitService, current);
-	if (target) {
-		await gitService.fetchBranch(target);
-	}
+	const target = await resolveTargetRemoteBranch(gitService, current, preferredRemote);
+	await gitService.fetchBranch(target);
 }
 
-export async function pullWithPicker(gitService: GitService): Promise<void> {
+export async function pullCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
 	const current = await gitService.getCurrentBranch();
 	requireCurrentBranch(current);
-	const target = await resolveTargetRemoteBranch(gitService, current);
-	if (target) {
-		await gitService.pullBranch(target);
-	}
+	const target = await resolveTargetRemoteBranch(gitService, current, preferredRemote);
+	await gitService.pullBranch(target);
 }
 
-/** If the current branch is already published, just pushes it; otherwise prompts for a remote name and publishes + tracks it. */
-export async function pushCurrentBranch(gitService: GitService): Promise<void> {
+/** Resolves which remote a publish should target -- a QuickPick (VS Code's own "input box with a
+ * dropdown") only when there's real ambiguity to resolve. With a single remote configured that's
+ * obviously the only sensible target, so skipping the prompt there saves a click; with none at all,
+ * there's nothing to publish to yet. Undefined only when the user cancels a multi-remote picker. */
+async function pickRemote(gitService: GitService, branchName: string): Promise<string | undefined> {
+	const remotes = await gitService.listRemotes();
+	if (remotes.length === 0) {
+		throw new Error('No remote configured -- add one from the Remotes view first.');
+	}
+	if (remotes.length === 1) {
+		return remotes[0];
+	}
+	return vscode.window.showQuickPick(remotes, {
+		placeHolder: `Which remote should "${branchName}" publish to?`,
+		ignoreFocusOut: true,
+	});
+}
+
+/** If the current branch is already published, pushes it to its actual tracked remote (not
+ * necessarily "origin" -- see splitRemoteBranch); otherwise publishes + tracks it against
+ * `preferredRemote` if given (the History tab's own remote dropdown already resolved that choice,
+ * so there's no need to ask again), or falls back to `pickRemote`'s picker -- used when this is
+ * invoked from somewhere with no such dropdown, e.g. the Branches view's Push button. */
+export async function pushCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
 	const current = await gitService.getCurrentBranch();
 	requireCurrentBranch(current);
 
 	const upstream = await gitService.getUpstreamBranch(current);
 	if (upstream) {
-		await gitService.pushBranch(current);
+		await gitService.pushBranch(current, splitRemoteBranch(upstream).remote);
+		return;
+	}
+
+	const remote = preferredRemote ?? (await pickRemote(gitService, current));
+	if (!remote) {
 		return;
 	}
 
 	const remoteName = await vscode.window.showInputBox({
-		prompt: `Publish "${current}" to origin as:`,
+		prompt: `Publish "${current}" to ${remote} as:`,
 		value: current,
 		validateInput: value => (value.trim() ? undefined : 'Enter a branch name.'),
 		ignoreFocusOut: true,
 	});
 	if (remoteName) {
-		await gitService.publishBranch(current, remoteName.trim());
+		await gitService.publishBranch(current, remoteName.trim(), remote);
 	}
 }
 
 /** Pulls from the target remote branch, then pushes back — publishing first if the branch isn't tracked yet. */
-export async function syncCurrentBranch(gitService: GitService): Promise<void> {
+export async function syncCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
 	const current = await gitService.getCurrentBranch();
 	requireCurrentBranch(current);
 
-	const target = await resolveTargetRemoteBranch(gitService, current);
-	if (!target) {
-		return;
-	}
+	const target = await resolveTargetRemoteBranch(gitService, current, preferredRemote);
 	await gitService.pullBranch(target);
 
 	const upstream = await gitService.getUpstreamBranch(current);
 	if (upstream) {
-		await gitService.pushBranch(current);
+		await gitService.pushBranch(current, splitRemoteBranch(upstream).remote);
 	} else {
-		await gitService.publishBranch(current, stripRemotePrefix(target));
+		const { remote, branch } = splitRemoteBranch(target);
+		await gitService.publishBranch(current, branch, remote);
 	}
 }
 

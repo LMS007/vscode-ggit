@@ -21,10 +21,14 @@ export type HostMessage =
 			/** Whether the branch has an upstream configured at all -- false means it's never been
 			 * pushed, which is when the Push button becomes "Publish" instead. */
 			hasUpstream: boolean;
-			/** Whether "origin" is configured for this repo -- false (e.g. right after `git init`,
-			 * before `git remote add origin ...`) means there's nowhere to publish to yet, so
-			 * "Publish" shows disabled-grey instead of the normal publish purple. */
-			hasRemote: boolean;
+			/** Every remote configured for this repo -- populates the toolbar's remote dropdown (always
+			 * shown, even with just one entry). An empty array is what makes the Push button fall back
+			 * to its disabled-grey "Publish" state -- there's nowhere to publish to yet. */
+			remotes: string[];
+			/** Which entry in `remotes` is the dropdown's current selection -- persisted host-side (see
+			 * SELECTED_REMOTE_KEY) so it survives a panel reload, not just re-derived from scratch every
+			 * time. Undefined only when `remotes` is empty. */
+			selectedRemote: string | undefined;
 	  }
 	/** A subsequent page, requested via 'loadMoreCommits' -- appended to, not replacing, what's
 	 * already rendered. */
@@ -45,7 +49,13 @@ export type WebviewMessage =
 	| { type: 'selectCommit'; sha: string }
 	| { type: 'openDiff'; sha: string; file: ChangedFile }
 	| { type: 'setSplit'; commitsPercent: number }
-	| { type: 'runAction'; command: string }
+	/** `remote` is only ever set for the Push button -- it's the toolbar dropdown's current selection,
+	 * forwarded to `ggit.push` so a first-time publish targets it without asking again via its own
+	 * picker. Every other toolbar button ignores the extra arg. */
+	| { type: 'runAction'; command: string; remote?: string }
+	/** The toolbar's remote dropdown was changed -- persisted (see SELECTED_REMOTE_KEY) so it's still
+	 * selected next time the panel opens. */
+	| { type: 'setRemote'; remote: string }
 	| { type: 'resetHead'; sha: string; mode: 'mixed' | 'hard' }
 	| { type: 'cherryPick'; sha: string }
 	| { type: 'savePatch'; sha: string; subject: string }

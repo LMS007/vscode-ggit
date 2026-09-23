@@ -16,19 +16,25 @@ const commitContextMenuEl = document.getElementById('commitContextMenu')!;
 const fileContextMenuEl = document.getElementById('fileContextMenu')!;
 const pushButtonEl = toolbarEl.querySelector<HTMLElement>('.toolbar-btn[data-command="ggit.push"]');
 const pushButtonLabelEl = pushButtonEl?.querySelector<HTMLElement>('.toolbar-btn-label');
+const remoteSelectEl = document.getElementById('remoteSelect') as HTMLSelectElement | null;
+const addRemoteButtonEl = document.getElementById('addRemoteButton');
 
 /** Four states, driven by the same facts the "commits" message already carries:
- *  - no "origin" configured at all -> grey "Publish" (nowhere to publish to yet)
- *  - origin exists, branch never pushed (no upstream) -> purple "Publish"
- *  - origin exists, upstream exists, commits ahead -> green "Push"
- *  - origin exists, upstream exists, nothing ahead -> grey "Push"
+ *  - no remote configured at all -> grey "Publish" (nowhere to publish to yet)
+ *  - a remote exists, branch never pushed (no upstream) -> purple "Publish"
+ *  - a remote exists, upstream exists, commits ahead -> green "Push"
+ *  - a remote exists, upstream exists, nothing ahead -> grey "Push"
  * Label text (not just color) changes because "Push" and "Publish" really are different actions --
  * publishing also sets up the new branch's tracking (see gitActions.pushCurrentBranch) -- even though
- * both are wired to the same 'runAction'/ggit.push command underneath. */
-function updatePushButton(hasRemote: boolean, hasUpstream: boolean, aheadCount: number): void {
+ * both are wired to the same 'runAction'/ggit.push command underneath. `remotes` (not a plain
+ * boolean) because the dropdown is what "is there anywhere to publish to" now means -- there's
+ * always at least one entry to check once any remote exists, since the dropdown is built from that
+ * same list. */
+function updatePushButton(remotes: string[], hasUpstream: boolean, aheadCount: number): void {
 	if (!pushButtonEl) {
 		return;
 	}
+	const hasRemote = remotes.length > 0;
 	const label = hasRemote && hasUpstream ? 'Push' : 'Publish';
 	pushButtonEl.classList.toggle('toolbar-btn-success', hasRemote && hasUpstream && aheadCount > 0);
 	pushButtonEl.classList.toggle('toolbar-btn-publish', hasRemote && !hasUpstream);
@@ -37,6 +43,31 @@ function updatePushButton(hasRemote: boolean, hasUpstream: boolean, aheadCount: 
 	}
 	pushButtonEl.title = label;
 	pushButtonEl.setAttribute('aria-label', label);
+}
+
+/** Toggles the toolbar's remote dropdown against the purple "Add Remote" button next to it -- with
+ * no remotes configured, an empty/disabled dropdown is a dead end, so that state gets a clickable
+ * way out instead. Both start `hidden` in the HTML; this is what decides which one actually shows. */
+function renderRemoteSelect(remotes: string[], selectedRemote: string | undefined): void {
+	if (remotes.length === 0) {
+		if (remoteSelectEl) {
+			remoteSelectEl.hidden = true;
+		}
+		if (addRemoteButtonEl) {
+			addRemoteButtonEl.hidden = false;
+		}
+		return;
+	}
+	if (addRemoteButtonEl) {
+		addRemoteButtonEl.hidden = true;
+	}
+	if (!remoteSelectEl) {
+		return;
+	}
+	remoteSelectEl.hidden = false;
+	remoteSelectEl.innerHTML = remotes
+		.map(r => `<option value="${escapeHtml(r)}"${r === selectedRemote ? ' selected' : ''}>${escapeHtml(r)}</option>`)
+		.join('');
 }
 const searchInput = document.getElementById('searchInput') as HTMLInputElement;
 const searchStatusEl = document.getElementById('searchStatus')!;
@@ -54,10 +85,27 @@ const SEARCH_MIN_COMMITS = 1000;
  * button stops appearing and a message explains why instead. */
 const SEARCH_MAX_COMMITS = 5000;
 
+/** Which toolbar commands the remote dropdown's selection gets forwarded to (see the toolbar click
+ * handler below). */
+const REMOTE_AWARE_COMMANDS = new Set(['ggit.push', 'ggit.fetch', 'ggit.pull', 'ggit.sync']);
+
 toolbarEl.addEventListener('click', event => {
 	const btn = (event.target as HTMLElement).closest<HTMLElement>('.toolbar-btn[data-command]');
-	if (btn) {
-		vscodeApi.postMessage({ type: 'runAction', command: btn.dataset.command! });
+	if (!btn) {
+		return;
+	}
+	const command = btn.dataset.command!;
+	// Fetch/Pull/Push/Sync all resolve a target remote when there's no upstream yet (see
+	// gitActions.ts) -- forwarding the dropdown's selection lets each default to it directly instead
+	// of falling back to their own "origin, else whichever's first" guess. Every other toolbar button
+	// ignores the extra arg.
+	const remote = REMOTE_AWARE_COMMANDS.has(command) && remoteSelectEl?.value ? remoteSelectEl.value : undefined;
+	vscodeApi.postMessage({ type: 'runAction', command, remote });
+});
+
+remoteSelectEl?.addEventListener('change', () => {
+	if (remoteSelectEl.value) {
+		vscodeApi.postMessage({ type: 'setRemote', remote: remoteSelectEl.value });
 	}
 });
 
@@ -539,7 +587,8 @@ window.addEventListener('message', event => {
 			searchInput.value = '';
 			searchStatusEl.textContent = '';
 			searchClearButton.hidden = true;
-			updatePushButton(message.hasRemote, message.hasUpstream, message.aheadCount);
+			renderRemoteSelect(message.remotes, message.selectedRemote);
+			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount);
 			commitsEl.scrollTop = 0;
 			renderCommits(message.commits);
 			if (message.commits.length === 0) {

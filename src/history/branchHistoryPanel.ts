@@ -8,6 +8,12 @@ import { HostMessage, WebviewMessage } from './protocol';
 /** Shared across every History panel instance/reload — not scoped to a single webview session. */
 const SPLIT_STATE_KEY = 'ggit.historyPanel.commitsSplitPercent';
 
+/** Same sharing as SPLIT_STATE_KEY -- which remote the toolbar dropdown last had selected, so
+ * reopening the panel doesn't reset back to whatever the "prefer origin, else first" default picks.
+ * Repo-wide rather than per-branch: which remote you're pushing/publishing to isn't really a property
+ * of any one branch. */
+const SELECTED_REMOTE_KEY = 'ggit.historyPanel.selectedRemote';
+
 /** Commits per page -- see GitService.getLog. Small enough that even a page near the end of a huge,
  * deeply-diverged branch's history stays fast; large enough that scrolling doesn't feel choppy. */
 const COMMITS_PAGE_SIZE = 100;
@@ -44,6 +50,9 @@ export class BranchHistoryPanel {
 	private commitsLoaded = 0;
 	private hasMoreCommits = false;
 	private loadingMoreCommits = false;
+	// undefined until the first loadCommits resolves an effective one (persisted choice if still
+	// valid, else "origin" if present, else whatever's first) -- see loadCommits.
+	private selectedRemote: string | undefined;
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -51,6 +60,7 @@ export class BranchHistoryPanel {
 		branchName: string
 	) {
 		this.branchName = branchName;
+		this.selectedRemote = context.globalState.get<string>(SELECTED_REMOTE_KEY);
 		this.panel = vscode.window.createWebviewPanel(
 			'ggitBranchHistory',
 			`History: ${branchName}`,
@@ -99,14 +109,26 @@ export class BranchHistoryPanel {
 			return;
 		}
 		try {
-			const [{ commits, hasMore }, aheadCount, upstream, hasRemote] = await Promise.all([
+			const [{ commits, hasMore }, aheadCount, upstream, remotes] = await Promise.all([
 				this.gitService.getLog(this.branchName, { skip: 0, limit: COMMITS_PAGE_SIZE }),
 				this.gitService.getAheadCount(this.branchName),
 				this.gitService.getUpstreamBranch(this.branchName),
-				this.gitService.hasRemote(),
+				this.gitService.listRemotes(),
 			]);
 			this.commitsLoaded = commits.length;
 			this.hasMoreCommits = hasMore;
+			// The previously-selected remote if it's still configured; otherwise "origin" if present
+			// (the common case, and what pickRemote/pushCurrentBranch would land on anyway with only
+			// one remote); otherwise whatever's first. Persisted only when it actually changes, so a
+			// repo with zero or one remote doesn't write to globalState on every single load.
+			const effectiveRemote =
+				this.selectedRemote && remotes.includes(this.selectedRemote)
+					? this.selectedRemote
+					: (remotes.includes('origin') ? 'origin' : remotes[0]);
+			if (effectiveRemote !== this.selectedRemote) {
+				this.selectedRemote = effectiveRemote;
+				void this.context.globalState.update(SELECTED_REMOTE_KEY, effectiveRemote);
+			}
 			this.post({
 				type: 'commits',
 				branchName: this.branchName,
@@ -115,7 +137,8 @@ export class BranchHistoryPanel {
 				hasMore,
 				aheadCount,
 				hasUpstream: upstream !== undefined,
-				hasRemote,
+				remotes,
+				selectedRemote: effectiveRemote,
 			});
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
@@ -226,8 +249,12 @@ export class BranchHistoryPanel {
 			case 'setSplit':
 				void this.context.globalState.update(SPLIT_STATE_KEY, msg.commitsPercent);
 				break;
+			case 'setRemote':
+				this.selectedRemote = msg.remote;
+				void this.context.globalState.update(SELECTED_REMOTE_KEY, msg.remote);
+				break;
 			case 'runAction':
-				void vscode.commands.executeCommand(msg.command);
+				void vscode.commands.executeCommand(msg.command, msg.remote);
 				break;
 			case 'resetHead':
 				try {
@@ -330,18 +357,31 @@ export class BranchHistoryPanel {
 		// package.json-style static title can't vary by platform the way this one needs to.
 		const revealInOsLabel =
 			process.platform === 'darwin' ? 'Reveal in Finder' : process.platform === 'win32' ? 'Reveal in File Explorer' : 'Open Containing Folder';
-		const toolbarButtons = TOOLBAR_BUTTONS.map((b, i) => {
-			// A thin divider right before the stash/commit trio, so they read as a distinct group to
-			// the right of the branch-management buttons rather than just more of the same row.
-			const separator = i === 7 ? '<span class="toolbar-separator"></span>' : '';
-			const classAttr = `toolbar-btn${b.primary ? ' toolbar-btn-primary' : ''}`;
-			const trailingIconHtml = b.trailingIcon ? `<span class="codicon codicon-${b.trailingIcon}"></span>` : '';
-			return (
-				separator +
-				`<button class="${classAttr}" data-command="${b.command}" title="${b.label}" aria-label="${b.label}">` +
-				`<span class="codicon codicon-${b.icon}"></span><span class="toolbar-btn-label">${b.label}</span>${trailingIconHtml}</button>`
-			);
-		}).join('');
+		// Leads the toolbar, ahead of Create Branch -- what remote Fetch/Pull/Push/Sync target (see
+		// webview/main.ts) is more fundamental than any single action, so it reads as "pick a remote,
+		// then act on it" left to right. Two elements, toggled by the webview (see renderRemoteSelect)
+		// rather than always both present: the <select> once at least one remote exists, or else this
+		// purple "Add Remote" button (reusing .toolbar-btn-publish -- same "something needs setting up
+		// before you can do the normal thing" meaning as the Push button's own purple state) wired to
+		// the same ggit.addRemote command as the Remotes view's own toolbar button.
+		const remoteToolbarHtml =
+			'<select id="remoteSelect" class="toolbar-remote-select" title="Remote" aria-label="Remote" hidden></select>' +
+			'<button id="addRemoteButton" class="toolbar-btn toolbar-btn-publish" data-command="ggit.addRemote" title="Add Remote" aria-label="Add Remote" hidden>' +
+			'<span class="codicon codicon-add"></span><span class="toolbar-btn-label">Add Remote</span></button>';
+		const toolbarButtons =
+			remoteToolbarHtml +
+			TOOLBAR_BUTTONS.map((b, i) => {
+				// A thin divider right before the stash/commit trio, so they read as a distinct group to
+				// the right of the branch-management buttons rather than just more of the same row.
+				const separator = i === 7 ? '<span class="toolbar-separator"></span>' : '';
+				const classAttr = `toolbar-btn${b.primary ? ' toolbar-btn-primary' : ''}`;
+				const trailingIconHtml = b.trailingIcon ? `<span class="codicon codicon-${b.trailingIcon}"></span>` : '';
+				return (
+					separator +
+					`<button class="${classAttr}" data-command="${b.command}" title="${b.label}" aria-label="${b.label}">` +
+					`<span class="codicon codicon-${b.icon}"></span><span class="toolbar-btn-label">${b.label}</span>${trailingIconHtml}</button>`
+				);
+			}).join('');
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -386,6 +426,12 @@ export class BranchHistoryPanel {
 			font-size: inherit;
 			cursor: pointer;
 		}
+		/* An author-stylesheet display (above) otherwise always wins over the UA stylesheet's own
+		 * [hidden] rule, regardless of selector specificity -- without this, toggling the hidden
+		 * attribute on #addRemoteButton (a .toolbar-btn) wouldn't actually hide it. */
+		.toolbar-btn[hidden] {
+			display: none;
+		}
 		.toolbar-btn:hover {
 			border-color: rgba(200, 200, 200, 0.85);
 			background-color: var(--vscode-toolbar-hoverBackground);
@@ -401,6 +447,27 @@ export class BranchHistoryPanel {
 			align-self: stretch;
 			background-color: var(--vscode-panel-border);
 			margin: 2px 4px;
+		}
+		/* What Push/Publish targets (see webview/main.ts) -- a plain <select> rather than a custom
+		 * dropdown so it gets native OS combobox behavior (keyboard nav, etc.) for free, just themed
+		 * to sit alongside the toolbar buttons instead of looking like a stray form control. */
+		.toolbar-remote-select {
+			height: 28px;
+			padding: 0 6px;
+			border: 1px solid rgba(200, 200, 200, 0.4);
+			border-radius: 4px;
+			background-color: var(--vscode-dropdown-background, transparent);
+			color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+			font-family: inherit;
+			font-size: inherit;
+			max-width: 140px;
+		}
+		.toolbar-remote-select:hover {
+			border-color: rgba(200, 200, 200, 0.85);
+		}
+		.toolbar-remote-select:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
 		}
 		.toolbar-btn-primary {
 			border-color: transparent;

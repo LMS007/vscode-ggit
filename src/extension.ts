@@ -13,8 +13,8 @@ import {
 	applyStashWithPicker,
 	deleteLocalBranch,
 	discardWorkingChanges,
-	fetchWithPicker,
-	pullWithPicker,
+	fetchCurrentBranch,
+	pullCurrentBranch,
 	pushCurrentBranch,
 	rebaseCurrentBranchWithPicker,
 	renameLocalBranch,
@@ -220,20 +220,24 @@ export function activate(context: vscode.ExtensionContext): void {
 			CreateBranchPanel.createOrShow(context, gitService, refreshAll);
 		}),
 
-		vscode.commands.registerCommand('ggit.fetch', () =>
-			runGitOperation('Fetching…', () => fetchWithPicker(gitService), refreshAll)
+		// The optional `remote` arg on fetch/pull/push/sync is only ever supplied by the History tab's
+		// own remote dropdown (see branchHistoryPanel.ts's 'runAction' handling) -- every other
+		// trigger, like the Branches view's toolbar, calls these with no args and each falls back to
+		// its own sensible default (see pickDefaultRemote/pickRemote in gitActions.ts).
+		vscode.commands.registerCommand('ggit.fetch', (remote?: string) =>
+			runGitOperation('Fetching…', () => fetchCurrentBranch(gitService, remote), refreshAll)
 		),
 
-		vscode.commands.registerCommand('ggit.pull', () =>
-			runGitOperation('Pulling…', () => pullWithPicker(gitService), refreshAll)
+		vscode.commands.registerCommand('ggit.pull', (remote?: string) =>
+			runGitOperation('Pulling…', () => pullCurrentBranch(gitService, remote), refreshAll)
 		),
 
-		vscode.commands.registerCommand('ggit.push', () =>
-			runGitOperation('Pushing…', () => pushCurrentBranch(gitService), refreshAll)
+		vscode.commands.registerCommand('ggit.push', (remote?: string) =>
+			runGitOperation('Pushing…', () => pushCurrentBranch(gitService, remote), refreshAll)
 		),
 
-		vscode.commands.registerCommand('ggit.sync', () =>
-			runGitOperation('Syncing…', () => syncCurrentBranch(gitService), refreshAll)
+		vscode.commands.registerCommand('ggit.sync', (remote?: string) =>
+			runGitOperation('Syncing…', () => syncCurrentBranch(gitService, remote), refreshAll)
 		),
 
 		vscode.commands.registerCommand('ggit.rebase', () =>

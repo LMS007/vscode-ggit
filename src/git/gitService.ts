@@ -158,7 +158,7 @@ export class GitService {
 		return owners;
 	}
 
-	async listRemoteBranches(remote = 'origin'): Promise<RemoteBranchInfo[]> {
+	async listRemoteBranches(remote: string): Promise<RemoteBranchInfo[]> {
 		const out = await this.git.raw(['branch', '-r', '--format=%(refname:short)']);
 		return out
 			.split('\n')
@@ -259,15 +259,6 @@ export class GitService {
 		return Number(out.match(/ahead (\d+)/)?.[1] ?? 0);
 	}
 
-	/** Whether `remote` is configured for this repo at all -- distinct from "has no upstream": a
-	 * branch can lack an upstream while origin still exists (never pushed) or while origin doesn't
-	 * exist at all (nothing to publish to yet, e.g. right after `git init`). Drives the History
-	 * panel's Push button choosing between a disabled-looking "Publish" and a clickable purple one. */
-	async hasRemote(remote = 'origin'): Promise<boolean> {
-		const remotes = await this.listRemotes();
-		return remotes.includes(remote);
-	}
-
 	async fetchBranch(remoteBranchName: string): Promise<void> {
 		const { remote, branch } = splitRemoteBranch(remoteBranchName);
 		await this.git.fetch(remote, branch);
@@ -279,12 +270,12 @@ export class GitService {
 	}
 
 	/** Pushes an already-tracked branch to its upstream. */
-	async pushBranch(branchName: string, remote = 'origin'): Promise<void> {
+	async pushBranch(branchName: string, remote: string): Promise<void> {
 		await this.git.push(remote, branchName);
 	}
 
 	/** Pushes a never-before-published local branch and sets it up to track the new remote branch. */
-	async publishBranch(branchName: string, remoteBranchName: string, remote = 'origin'): Promise<void> {
+	async publishBranch(branchName: string, remoteBranchName: string, remote: string): Promise<void> {
 		await this.git.raw(['push', '-u', remote, `${branchName}:${remoteBranchName}`]);
 	}
 
@@ -657,11 +648,11 @@ export class GitService {
 		await this.git.raw(['rebase', '--abort']);
 	}
 
-	async fetch(remote = 'origin'): Promise<void> {
+	async fetch(remote: string): Promise<void> {
 		await this.git.fetch(remote);
 	}
 
-	async pull(remote = 'origin'): Promise<void> {
+	async pull(remote: string): Promise<void> {
 		const current = await this.getCurrentBranch();
 		if (!current) {
 			throw new Error('Cannot pull: HEAD is detached (no current branch).');
