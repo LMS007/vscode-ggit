@@ -76,6 +76,15 @@ export function activate(context: vscode.ExtensionContext): void {
 	branchesView.description = workspaceFolder.name;
 
 	const remotesView = vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider });
+	// See branchesView above -- description here gets temporarily overridden by the search-filter
+	// status instead (see ggit.searchRemotes below), which falls back to this same folder name once
+	// the filter's cleared.
+	remotesView.description = workspaceFolder.name;
+
+	// Multi-select is for bulk delete only — Apply always acts on just the row you right-clicked,
+	// ignoring the rest of the selection (see ggit.applyStashItem below).
+	const stashesView = vscode.window.createTreeView('ggitStashes', { treeDataProvider: stashesProvider, canSelectMany: true });
+	stashesView.description = workspaceFolder.name;
 
 	// Mirrors the built-in Source Control icon's badge — VS Code aggregates a view's `badge` up onto
 	// its container's activity-bar icon automatically, so setting this on just the Working Copy view
@@ -92,10 +101,11 @@ export function activate(context: vscode.ExtensionContext): void {
 	// comes from the static viewsContainers title in package.json and can't be set at runtime. The
 	// Working Copy view's own header is the closest thing to it (it's the topmost row, directly below
 	// "GGit"), and TreeView.description is explicitly documented as safe to update dynamically, so the
-	// active branch goes there instead.
+	// repo folder name (what "GGit - <folder>" would've shown, if that were possible) and the active
+	// branch both go there instead, folder first since that's the more stable/identifying of the two.
 	const updateActiveBranchLabel = async () => {
 		const current = await gitService.getCurrentBranch();
-		workingCopyView.description = current ?? undefined;
+		workingCopyView.description = current ? `${workspaceFolder.name} · ${current}` : workspaceFolder.name;
 	};
 
 	// The Conflicts view only shows at all while a rebase is in progress (see its `when` clause in
@@ -163,9 +173,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		remotesView,
 		vscode.window.createTreeView('ggitConflicts', { treeDataProvider: conflictsProvider, canSelectMany: true }),
 		vscode.window.registerWebviewViewProvider('ggitCommitLauncher', commitLauncherProvider),
-		// Multi-select is for bulk delete only — Apply always acts on just the row you right-clicked,
-		// ignoring the rest of the selection (see ggit.applyStashItem below).
-		vscode.window.createTreeView('ggitStashes', { treeDataProvider: stashesProvider, canSelectMany: true }),
+		stashesView,
 		vscode.workspace.registerTextDocumentContentProvider(GGIT_SHOW_SCHEME, showContentProvider),
 		vscode.window.registerFileDecorationProvider(activeBranchDecorations),
 		vscode.window.registerFileDecorationProvider(workingChangeDecorations),
@@ -206,7 +214,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			inputBox.onDidChangeValue(value => {
 				remotesProvider.setFilter(value);
 				const trimmed = value.trim();
-				remotesView.description = trimmed ? `Filter: "${trimmed}"` : undefined;
+				remotesView.description = trimmed ? `Filter: "${trimmed}"` : workspaceFolder.name;
 			});
 			inputBox.onDidHide(() => inputBox.dispose());
 			inputBox.show();
