@@ -242,6 +242,22 @@ export class BranchHistoryPanel {
 			case 'openFileForEditing':
 				await this.openFileForEditing(msg.path);
 				break;
+			case 'copyCommitHash':
+				await vscode.env.clipboard.writeText(msg.sha);
+				break;
+			case 'copyFilePath':
+				await vscode.env.clipboard.writeText(
+					msg.mode === 'relative'
+						? msg.path.split('/').join(path.sep)
+						: path.join(this.gitService.repoRoot, msg.path)
+				);
+				break;
+			case 'revealFileInExplorer':
+				void vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(path.join(this.gitService.repoRoot, msg.path)));
+				break;
+			case 'revealFileInOS':
+				void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(path.join(this.gitService.repoRoot, msg.path)));
+				break;
 		}
 	}
 
@@ -298,6 +314,11 @@ export class BranchHistoryPanel {
 		);
 		const nonce = getNonce();
 		const initialSplitPercent = context.globalState.get<number>(SPLIT_STATE_KEY, 60);
+		// Mirrors the wording VS Code's own Explorer context menu uses for this per OS -- computed here
+		// (extension host, so process.platform is the real OS) rather than in the webview, since a
+		// package.json-style static title can't vary by platform the way this one needs to.
+		const revealInOsLabel =
+			process.platform === 'darwin' ? 'Reveal in Finder' : process.platform === 'win32' ? 'Reveal in File Explorer' : 'Open Containing Folder';
 		const toolbarButtons = TOOLBAR_BUTTONS.map((b, i) => {
 			// A thin divider right before the stash/commit trio, so they read as a distinct group to
 			// the right of the branch-management buttons rather than just more of the same row.
@@ -748,12 +769,21 @@ export class BranchHistoryPanel {
 		<div id="files" class="pane"><div class="empty">Select a commit to see its changed files.</div></div>
 	</div>
 	<div id="commitContextMenu" class="context-menu" hidden>
+		<div class="context-menu-item" data-action="copyHash">Copy Commit Hash</div>
+		<div class="context-menu-separator"></div>
 		<div class="context-menu-item" data-action="resetMixed">Reset Branch to Here (Mixed)</div>
 		<div class="context-menu-item danger" data-action="resetHard">Reset Branch to Here (Hard)</div>
 		<div class="context-menu-separator"></div>
 		<div class="context-menu-item" data-action="cherryPick">Cherry-Pick Commit</div>
 		<div class="context-menu-separator"></div>
 		<div class="context-menu-item" data-action="savePatch">Save Patch…</div>
+	</div>
+	<div id="fileContextMenu" class="context-menu" hidden>
+		<div class="context-menu-item" data-action="copyRelativePath">Copy Relative Path</div>
+		<div class="context-menu-item" data-action="copyFullPath">Copy Path</div>
+		<div class="context-menu-separator"></div>
+		<div class="context-menu-item" data-action="revealInExplorer">Reveal in Explorer View</div>
+		<div class="context-menu-item" data-action="revealInOS">${revealInOsLabel}</div>
 	</div>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

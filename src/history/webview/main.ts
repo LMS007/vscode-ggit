@@ -13,6 +13,7 @@ const filesEl = document.getElementById('files')!;
 const splitterEl = document.getElementById('splitter')!;
 const toolbarEl = document.getElementById('toolbar')!;
 const commitContextMenuEl = document.getElementById('commitContextMenu')!;
+const fileContextMenuEl = document.getElementById('fileContextMenu')!;
 const pushButtonEl = toolbarEl.querySelector<HTMLElement>('.toolbar-btn[data-command="ggit.push"]');
 const searchInput = document.getElementById('searchInput') as HTMLInputElement;
 const searchStatusEl = document.getElementById('searchStatus')!;
@@ -309,6 +310,9 @@ commitContextMenuEl.addEventListener('click', event => {
 	}
 	const commit = currentCommits.find(c => c.hash === sha);
 	switch (item.dataset.action) {
+		case 'copyHash':
+			vscodeApi.postMessage({ type: 'copyCommitHash', sha });
+			break;
 		case 'resetMixed':
 			vscodeApi.postMessage({ type: 'resetHead', sha, mode: 'mixed' });
 			break;
@@ -324,12 +328,84 @@ commitContextMenuEl.addEventListener('click', event => {
 	}
 });
 
+let contextMenuFilePath: string | undefined;
+
+function hideFileContextMenu(): void {
+	fileContextMenuEl.hidden = true;
+	contextMenuFilePath = undefined;
+}
+
+/** Same positioning/clamping as showContextMenu (commits) -- kept as a separate copy rather than a
+ * shared helper since the two menus are independent DOM elements with independent open/close state. */
+function showFileContextMenu(x: number, y: number, filePath: string): void {
+	contextMenuFilePath = filePath;
+	fileContextMenuEl.hidden = false;
+	fileContextMenuEl.style.left = `${x}px`;
+	fileContextMenuEl.style.top = `${y}px`;
+	requestAnimationFrame(() => {
+		const rect = fileContextMenuEl.getBoundingClientRect();
+		if (rect.right > window.innerWidth) {
+			fileContextMenuEl.style.left = `${Math.max(0, window.innerWidth - rect.width - 4)}px`;
+		}
+		if (rect.bottom > window.innerHeight) {
+			fileContextMenuEl.style.top = `${Math.max(0, window.innerHeight - rect.height - 4)}px`;
+		}
+	});
+}
+
+// Right-clicking a file row previously fell through to the webview's default browser context menu
+// (Cut/Copy/Paste, from the row's selectable text) -- preventDefault here is what replaces that with
+// GGit's own menu instead. Deliberately doesn't call selectFile() (unlike the commits pane, which does
+// select on right-click): selectFile() posts 'openDiff' and opens a diff editor tab, which would be a
+// surprising side effect of just right-clicking a row.
+filesEl.addEventListener('contextmenu', event => {
+	const row = (event.target as HTMLElement).closest<HTMLElement>('.row[data-index]');
+	if (!row) {
+		return;
+	}
+	event.preventDefault();
+	const file = currentFiles[Number(row.dataset.index)];
+	if (!file) {
+		return;
+	}
+	showFileContextMenu(event.clientX, event.clientY, file.path);
+});
+
+fileContextMenuEl.addEventListener('click', event => {
+	const item = (event.target as HTMLElement).closest<HTMLElement>('.context-menu-item[data-action]');
+	const filePath = contextMenuFilePath;
+	hideFileContextMenu();
+	if (!item || !filePath) {
+		return;
+	}
+	switch (item.dataset.action) {
+		case 'copyRelativePath':
+			vscodeApi.postMessage({ type: 'copyFilePath', path: filePath, mode: 'relative' });
+			break;
+		case 'copyFullPath':
+			vscodeApi.postMessage({ type: 'copyFilePath', path: filePath, mode: 'full' });
+			break;
+		case 'revealInExplorer':
+			vscodeApi.postMessage({ type: 'revealFileInExplorer', path: filePath });
+			break;
+		case 'revealInOS':
+			vscodeApi.postMessage({ type: 'revealFileInOS', path: filePath });
+			break;
+	}
+});
+
 window.addEventListener('click', event => {
 	if (!commitContextMenuEl.hidden && !commitContextMenuEl.contains(event.target as Node)) {
 		hideContextMenu();
 	}
+	if (!fileContextMenuEl.hidden && !fileContextMenuEl.contains(event.target as Node)) {
+		hideFileContextMenu();
+	}
 });
-window.addEventListener('blur', hideContextMenu);
+window.addEventListener('blur', () => {
+	hideContextMenu();
+	hideFileContextMenu();
+});
 
 /** Walks whatever's actually rendered in the commits pane, in DOM order, rather than indexing into
  * currentCommits directly -- currentCommits is the full accumulated list, but a search may be
@@ -392,6 +468,7 @@ function getPageRowCount(container: HTMLElement, rowSelector: string): number {
 window.addEventListener('keydown', event => {
 	if (event.key === 'Escape') {
 		hideContextMenu();
+		hideFileContextMenu();
 		return;
 	}
 	const isArrow = event.key === 'ArrowDown' || event.key === 'ArrowUp';

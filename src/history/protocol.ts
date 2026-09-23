@@ -51,4 +51,11 @@ export type WebviewMessage =
 	/** The search box was focused (first interaction) or "Search older commits" was clicked -- ensure
 	 * at least `minCount` commits are loaded, fetching more pages if needed. A cheap no-op if already
 	 * satisfied. */
-	| { type: 'ensureCommitsForSearch'; minCount: number };
+	| { type: 'ensureCommitsForSearch'; minCount: number }
+	/** "Copy Commit Hash" from the commit row's context menu -- always the full hash, not the
+	 * 7-char short form shown in the row, so it's unambiguous when pasted elsewhere. */
+	| { type: 'copyCommitHash'; sha: string }
+	/** "Copy Relative Path" / "Copy Path" from a file row's context menu. */
+	| { type: 'copyFilePath'; path: string; mode: 'relative' | 'full' }
+	| { type: 'revealFileInExplorer'; path: string }
+	| { type: 'revealFileInOS'; path: string };

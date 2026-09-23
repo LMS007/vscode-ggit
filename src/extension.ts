@@ -441,12 +441,37 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		),
 
+		// Relative to the repo root (== this extension's one workspace folder, see the top of
+		// activate()) with OS-native separators -- file.path itself is always "/"-separated (that's
+		// what git prints), which would be a lie to paste into a Windows path field as-is.
+		vscode.commands.registerCommand('ggit.copyRelativePath', (file: WorkingChangeFile) => {
+			void vscode.env.clipboard.writeText(file.path.split('/').join(path.sep));
+		}),
+
+		vscode.commands.registerCommand('ggit.copyPath', (file: WorkingChangeFile) => {
+			void vscode.env.clipboard.writeText(path.join(gitService.repoRoot, file.path));
+		}),
+
 		vscode.commands.registerCommand('ggit.revealInExplorerView', (file: WorkingChangeFile) => {
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 			void vscode.commands.executeCommand('revealInExplorer', uri);
 		}),
 
+		// Three commands, not one, purely so each can carry the OS-appropriate label VS Code's own
+		// Explorer uses ("Reveal in Finder" / "Reveal in File Explorer" / "Open Containing Folder") --
+		// package.json menu titles are static, so the isMac/isWindows/isLinux `when` clauses on these
+		// three (see package.json) are what actually pick the one that shows up on a given OS.
 		vscode.commands.registerCommand('ggit.revealInOS', (file: WorkingChangeFile) => {
+			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
+			void vscode.commands.executeCommand('revealFileInOS', uri);
+		}),
+
+		vscode.commands.registerCommand('ggit.revealInFileExplorer', (file: WorkingChangeFile) => {
+			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
+			void vscode.commands.executeCommand('revealFileInOS', uri);
+		}),
+
+		vscode.commands.registerCommand('ggit.openContainingFolder', (file: WorkingChangeFile) => {
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 			void vscode.commands.executeCommand('revealFileInOS', uri);
 		}),

@@ -187,12 +187,28 @@
         "title": "Ignore All Items with This Extension"
       },
       {
+        "command": "ggit.copyRelativePath",
+        "title": "Copy Relative Path"
+      },
+      {
+        "command": "ggit.copyPath",
+        "title": "Copy Path"
+      },
+      {
         "command": "ggit.revealInExplorerView",
         "title": "Reveal in Explorer View"
       },
       {
         "command": "ggit.revealInOS",
         "title": "Reveal in Finder"
+      },
+      {
+        "command": "ggit.revealInFileExplorer",
+        "title": "Reveal in File Explorer"
+      },
+      {
+        "command": "ggit.openContainingFolder",
+        "title": "Open Containing Folder"
       },
       {
         "command": "ggit.discardChanges",
@@ -349,14 +365,34 @@
           "group": "3_gitignore"
         },
         {
+          "command": "ggit.copyRelativePath",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "group": "4_copyPath@1"
+        },
+        {
+          "command": "ggit.copyPath",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "group": "4_copyPath@2"
+        },
+        {
           "command": "ggit.revealInExplorerView",
           "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
-          "group": "4_reveal@1"
+          "group": "5_reveal@1"
         },
         {
           "command": "ggit.revealInOS",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
-          "group": "4_reveal@2"
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction' && isMac",
+          "group": "5_reveal@2"
+        },
+        {
+          "command": "ggit.revealInFileExplorer",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction' && isWindows",
+          "group": "5_reveal@2"
+        },
+        {
+          "command": "ggit.openContainingFolder",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction' && isLinux",
+          "group": "5_reveal@2"
         },
         {
           "command": "ggit.createBranchFrom",
