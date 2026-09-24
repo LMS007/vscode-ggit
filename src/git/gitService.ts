@@ -93,12 +93,23 @@ export class GitService {
 				behind: behind > 0 ? behind : undefined,
 			});
 		}
-		return summary.all.map(name => ({
-			name,
-			isHead: name === summary.current,
-			...tracking.get(name),
-			worktreePath: worktreeOwners.get(name),
-		}));
+		// simple-git's branch-summary parser splits each `git branch -v` line on whitespace, which
+		// mis-parses git's own synthetic "not really on a branch" status lines -- e.g. mid-rebase,
+		// `git branch` shows "* (no branch, rebasing <branch>) <sha> <subject>", and the naive split
+		// treats "(no" (just the first token) as the branch name. Verified against a real rebase:
+		// simple-git returns summary.current === "(no" and includes "(no" in summary.all as if it
+		// were a real branch -- and even its own `summary.detached` flag comes back false here (it
+		// only recognizes the plain "(HEAD detached at ...)" phrasing, not this rebase-flavored one).
+		// No real branch name can start with "(", so that's what filters it out here, rather than
+		// matching the exact (and possibly locale-dependent) wording git uses.
+		return summary.all
+			.filter(name => !name.startsWith('('))
+			.map(name => ({
+				name,
+				isHead: name === summary.current,
+				...tracking.get(name),
+				worktreePath: worktreeOwners.get(name),
+			}));
 	}
 
 	/** One entry per worktree `git worktree` knows about, including whichever one GGit itself is
