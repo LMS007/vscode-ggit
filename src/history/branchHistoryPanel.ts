@@ -22,7 +22,16 @@ const COMMITS_PAGE_SIZE = 100;
  * branch, not necessarily the one this panel happens to be showing history for. The trailing three
  * (stash apply/save, commit) mirror Working Copy's own toolbar buttons instead — same commands, same
  * behavior, just also reachable from here. */
-const TOOLBAR_BUTTONS: { command: string; icon: string; label: string; primary?: boolean; trailingIcon?: string }[] = [
+const TOOLBAR_BUTTONS: {
+	command: string;
+	icon: string;
+	label: string;
+	primary?: boolean;
+	trailingIcon?: string;
+	// A thin divider right before this button, so it (and whatever follows) reads as a distinct
+	// group from whatever came before, rather than just more of the same row.
+	separatorBefore?: boolean;
+}[] = [
 	{ command: 'ggit.createBranch', icon: 'add', label: 'Create Branch' },
 	{ command: 'ggit.fetch', icon: 'cloud-download', label: 'Fetch' },
 	{ command: 'ggit.pull', icon: 'arrow-down', label: 'Pull' },
@@ -33,9 +42,11 @@ const TOOLBAR_BUTTONS: { command: string; icon: string; label: string; primary?:
 	// trailingIcon: a second, direction-indicating arrow to the right of the label — up for bringing a
 	// stash *out* into the working tree, down for putting one *away* into storage — on top of (not
 	// instead of) each button's own leading icon.
-	{ command: 'ggit.applyStash', icon: 'inbox', label: 'Apply Stash', trailingIcon: 'arrow-up' },
+	{ command: 'ggit.applyStash', icon: 'inbox', label: 'Apply Stash', trailingIcon: 'arrow-up', separatorBefore: true },
 	{ command: 'ggit.stashAll', icon: 'archive', label: 'Save Stash', trailingIcon: 'arrow-down' },
-	{ command: 'ggit.commit', icon: 'check', label: 'Commit', primary: true },
+	// Its own group of one -- separated from the stash pair so Commit (and View on GitHub, appended
+	// after it below) don't read as more stash-related actions.
+	{ command: 'ggit.commit', icon: 'check', label: 'Commit', primary: true, separatorBefore: true },
 ];
 
 export class BranchHistoryPanel {
@@ -109,11 +120,12 @@ export class BranchHistoryPanel {
 			return;
 		}
 		try {
-			const [{ commits, hasMore }, aheadCount, upstream, remotes] = await Promise.all([
+			const [{ commits, hasMore }, aheadCount, upstream, remotes, githubUrl] = await Promise.all([
 				this.gitService.getLog(this.branchName, { skip: 0, limit: COMMITS_PAGE_SIZE }),
 				this.gitService.getAheadCount(this.branchName),
 				this.gitService.getUpstreamBranch(this.branchName),
 				this.gitService.listRemotes(),
+				this.gitService.getGitHubBranchUrl(this.branchName),
 			]);
 			this.commitsLoaded = commits.length;
 			this.hasMoreCommits = hasMore;
@@ -139,6 +151,7 @@ export class BranchHistoryPanel {
 				hasUpstream: upstream !== undefined,
 				remotes,
 				selectedRemote: effectiveRemote,
+				githubUrl,
 			});
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
@@ -296,6 +309,9 @@ export class BranchHistoryPanel {
 			case 'revealFileInOS':
 				void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(path.join(this.gitService.repoRoot, msg.path)));
 				break;
+			case 'openExternalUrl':
+				void vscode.env.openExternal(vscode.Uri.parse(msg.url));
+				break;
 		}
 	}
 
@@ -370,10 +386,8 @@ export class BranchHistoryPanel {
 			'<span class="codicon codicon-add"></span><span class="toolbar-btn-label">Add Remote</span></button>';
 		const toolbarButtons =
 			remoteToolbarHtml +
-			TOOLBAR_BUTTONS.map((b, i) => {
-				// A thin divider right before the stash/commit trio, so they read as a distinct group to
-				// the right of the branch-management buttons rather than just more of the same row.
-				const separator = i === 7 ? '<span class="toolbar-separator"></span>' : '';
+			TOOLBAR_BUTTONS.map(b => {
+				const separator = b.separatorBefore ? '<span class="toolbar-separator"></span>' : '';
 				const classAttr = `toolbar-btn${b.primary ? ' toolbar-btn-primary' : ''}`;
 				const trailingIconHtml = b.trailingIcon ? `<span class="codicon codicon-${b.trailingIcon}"></span>` : '';
 				return (
@@ -381,7 +395,13 @@ export class BranchHistoryPanel {
 					`<button class="${classAttr}" data-command="${b.command}" title="${b.label}" aria-label="${b.label}">` +
 					`<span class="codicon codicon-${b.icon}"></span><span class="toolbar-btn-label">${b.label}</span>${trailingIconHtml}</button>`
 				);
-			}).join('');
+			}).join('') +
+			// Not one of TOOLBAR_BUTTONS' generic runAction buttons -- it opens a URL the extension host
+			// already computed (see 'commits'.githubUrl in webview/main.ts), and only when the current
+			// branch is actually published to a github.com remote, so it starts hidden and has no
+			// data-command of its own (see updateGitHubButton).
+			'<button id="githubButton" class="toolbar-btn" title="View on GitHub" aria-label="View on GitHub" hidden>' +
+			'<span class="codicon codicon-github"></span><span class="toolbar-btn-label">View on GitHub</span></button>';
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">

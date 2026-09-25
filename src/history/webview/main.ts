@@ -18,6 +18,7 @@ const pushButtonEl = toolbarEl.querySelector<HTMLElement>('.toolbar-btn[data-com
 const pushButtonLabelEl = pushButtonEl?.querySelector<HTMLElement>('.toolbar-btn-label');
 const remoteSelectEl = document.getElementById('remoteSelect') as HTMLSelectElement | null;
 const addRemoteButtonEl = document.getElementById('addRemoteButton');
+const githubButtonEl = document.getElementById('githubButton');
 
 /** Four states, driven by the same facts the "commits" message already carries:
  *  - no remote configured at all -> grey "Publish" (nowhere to publish to yet)
@@ -74,6 +75,28 @@ function renderRemoteSelect(remotes: string[], selectedRemote: string | undefine
 		.map(r => `<option value="${escapeHtml(r)}"${r === selectedRemote ? ' selected' : ''}>${escapeHtml(r)}</option>`)
 		.join('');
 }
+
+/** Shows/hides the toolbar's "View on GitHub" button -- hidden whenever the branch isn't published,
+ * or its remote isn't github.com (see GitService.getGitHubBranchUrl), rather than ever disabled. The
+ * URL itself is stashed on the element so the click handler below doesn't need its own message round
+ * trip just to re-fetch what the host already computed. */
+function updateGitHubButton(url: string | undefined): void {
+	if (!githubButtonEl) {
+		return;
+	}
+	githubButtonEl.hidden = !url;
+	if (url) {
+		githubButtonEl.dataset.url = url;
+	}
+}
+
+githubButtonEl?.addEventListener('click', () => {
+	const url = githubButtonEl.dataset.url;
+	if (url) {
+		vscodeApi.postMessage({ type: 'openExternalUrl', url });
+	}
+});
+
 const searchInput = document.getElementById('searchInput') as HTMLInputElement;
 const searchStatusEl = document.getElementById('searchStatus')!;
 const searchClearButton = document.getElementById('searchClearButton') as HTMLButtonElement;
@@ -594,6 +617,7 @@ window.addEventListener('message', event => {
 			searchClearButton.hidden = true;
 			renderRemoteSelect(message.remotes, message.selectedRemote);
 			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount);
+			updateGitHubButton(message.githubUrl);
 			commitsEl.scrollTop = 0;
 			renderCommits(message.commits);
 			if (message.commits.length === 0) {

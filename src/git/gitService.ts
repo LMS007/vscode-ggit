@@ -261,6 +261,33 @@ export class GitService {
 		}
 	}
 
+	/** This branch's GitHub "tree" URL, e.g. https://github.com/owner/repo/tree/branch-name --
+	 * undefined if it has no upstream, that upstream's remote can't be resolved to a URL, or the URL
+	 * isn't a github.com remote (GitHub Enterprise, GitLab, a local path, ...). Drives the History
+	 * panel's "View on GitHub" button, which only makes sense once a branch is actually published
+	 * somewhere GitHub can render this URL. */
+	async getGitHubBranchUrl(branchName: string): Promise<string | undefined> {
+		const upstream = await this.getUpstreamBranch(branchName);
+		if (!upstream) {
+			return undefined;
+		}
+		const { remote } = splitRemoteBranch(upstream);
+		const remotes = await this.git.getRemotes(true);
+		const url = remotes.find(r => r.name === remote)?.refs.fetch;
+		if (!url) {
+			return undefined;
+		}
+		const ownerRepo = parseGitHubOwnerRepo(url);
+		if (!ownerRepo) {
+			return undefined;
+		}
+		// Branch names commonly carry their own "/"-separated segments (e.g.
+		// "alice/feature-1234-...") -- GitHub's /tree/ URLs expect those literally, not
+		// %2F-encoded, so only each segment's own content gets escaped.
+		const branchPath = branchName.split('/').map(encodeURIComponent).join('/');
+		return `https://github.com/${ownerRepo.owner}/${ownerRepo.repo}/tree/${branchPath}`;
+	}
+
 	/** How many commits `branchName` has that its upstream doesn't -- 0 if it has no upstream or is
 	 * already fully pushed. Drives the History panel's Push button turning green when there's
 	 * something to push. Same cheap for-each-ref plumbing as listLocalBranches' ahead/behind, not a
@@ -759,6 +786,16 @@ function mapStatusCode(code: string): FileStatus {
 		default:
 			return 'M';
 	}
+}
+
+/** Parses a git remote URL into { owner, repo } only when it points at github.com -- handles both
+ * the SSH form (git@github.com:owner/repo.git) and HTTPS form (https://github.com/owner/repo.git),
+ * with or without the trailing .git. Anything else (GitHub Enterprise, GitLab, a local path, ...)
+ * returns undefined rather than guessing. */
+function parseGitHubOwnerRepo(url: string): { owner: string; repo: string } | undefined {
+	const match =
+		url.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/) ?? url.match(/^https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
+	return match ? { owner: match[1], repo: match[2] } : undefined;
 }
 
 /** Remote branch names always start with their own remote's name (e.g. "origin/main",

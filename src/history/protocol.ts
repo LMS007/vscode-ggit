@@ -29,6 +29,10 @@ export type HostMessage =
 			 * SELECTED_REMOTE_KEY) so it survives a panel reload, not just re-derived from scratch every
 			 * time. Undefined only when `remotes` is empty. */
 			selectedRemote: string | undefined;
+			/** This branch's github.com "tree" URL (see GitService.getGitHubBranchUrl) -- undefined
+			 * hides the toolbar's "View on GitHub" button entirely, whether that's because the branch
+			 * isn't published yet or its remote just isn't GitHub. */
+			githubUrl: string | undefined;
 	  }
 	/** A subsequent page, requested via 'loadMoreCommits' -- appended to, not replacing, what's
 	 * already rendered. */
@@ -75,4 +79,7 @@ export type WebviewMessage =
 	/** "Copy Relative Path" / "Copy Path" from a file row's context menu. */
 	| { type: 'copyFilePath'; path: string; mode: 'relative' | 'full' }
 	| { type: 'revealFileInExplorer'; path: string }
-	| { type: 'revealFileInOS'; path: string };
+	| { type: 'revealFileInOS'; path: string }
+	/** "View on GitHub" was clicked -- the webview can't call vscode.env.openExternal itself, so the
+	 * already-host-computed URL (see 'commits'.githubUrl) just gets handed back to open. */
+	| { type: 'openExternalUrl'; url: string };
