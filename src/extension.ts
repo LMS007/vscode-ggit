@@ -25,7 +25,7 @@ import {
 	unstageHunkAtCursor,
 } from './git/gitActions';
 import { GitService } from './git/gitService';
-import { BranchInfo, ConflictedFile, StashInfo, WorkingChangeFile } from './git/types';
+import { BranchInfo, StashInfo, WorkingChangeFile } from './git/types';
 import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
 import { BranchesTreeProvider } from './tree/branchesTreeProvider';
@@ -74,6 +74,11 @@ export function activate(context: vscode.ExtensionContext): void {
 	// static for now since GGit only ever looks at a single workspace folder (see the worktree
 	// discussion: there's no "switch worktree" yet, so this never needs to change mid-session).
 	branchesView.description = workspaceFolder.name;
+
+	const conflictsView = vscode.window.createTreeView('ggitConflicts', {
+		treeDataProvider: conflictsProvider,
+		canSelectMany: true,
+	});
 
 	const remotesView = vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider });
 	// See branchesView above -- description here gets temporarily overridden by the search-filter
@@ -163,6 +168,27 @@ export function activate(context: vscode.ExtensionContext): void {
 		}
 		refreshAll();
 	});
+
+	conflictsView.onDidChangeCheckboxState(async e => {
+		// There's no "unresolve" affordance -- a row's box always starts Unchecked (see
+		// ConflictsTreeProvider), so only the Checked direction is meaningful here.
+		const toResolve = e.items.filter(([, state]) => state === vscode.TreeItemCheckboxState.Checked).map(([file]) => file);
+		if (toResolve.length === 0) {
+			return;
+		}
+		await runGitOperation(
+			`Marking ${toResolve.length} file${toResolve.length === 1 ? '' : 's'} as resolved…`,
+			async () => {
+				for (const file of toResolve) {
+					output.appendLine(`checkbox: "${file.path}" -> Checked (mark resolved)`);
+					await saveOpenDocumentIfDirty(path.join(gitService.repoRoot, file.path));
+					await gitService.stageFile(file.path);
+				}
+			},
+			refreshAll
+		);
+	});
+
 	void updateWorkingCopyBadge();
 	void updateRebaseContext();
 	void updateActiveBranchLabel();
@@ -171,7 +197,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		workingCopyView,
 		branchesView,
 		remotesView,
-		vscode.window.createTreeView('ggitConflicts', { treeDataProvider: conflictsProvider, canSelectMany: true }),
+		conflictsView,
 		vscode.window.registerWebviewViewProvider('ggitCommitLauncher', commitLauncherProvider),
 		stashesView,
 		vscode.workspace.registerTextDocumentContentProvider(GGIT_SHOW_SCHEME, showContentProvider),
@@ -271,25 +297,6 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			return runGitOperation('Aborting rebase…', () => gitService.rebaseAbort(), refreshAll);
 		}),
-
-		// Once a conflicted file's markers are resolved by hand, it still needs to be staged before
-		// `rebase --continue` will treat it as done — this is that, applied to the whole selection when
-		// one was right-clicked (same convention as ggit.discardChanges / ggit.stashSelectedFiles).
-		vscode.commands.registerCommand(
-			'ggit.markConflictResolved',
-			(file: ConflictedFile, selectedFiles?: ConflictedFile[]) => {
-				const files = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
-				return runGitOperation(
-					`Marking ${files.length} file${files.length === 1 ? '' : 's'} as resolved…`,
-					async () => {
-						for (const f of files) {
-							await gitService.stageFile(f.path);
-						}
-					},
-					refreshAll
-				);
-			}
-		),
 
 		vscode.commands.registerCommand('ggit.openWorkingChangeDiff', async (file: WorkingChangeFile) => {
 			try {
@@ -672,6 +679,17 @@ function createDoubleClickGuard(thresholdMs = 400): (key: string) => boolean {
 		lastTime = now;
 		return isDouble;
 	};
+}
+
+/** Resolving a conflict by hand in an open editor doesn't put the fix on disk until it's saved, and
+ * `git add` (what marking a conflict resolved actually does) only ever sees disk content -- an
+ * unsaved editor would silently stage the still-conflicted version. Saves it first if it's open and
+ * dirty, so checking the box always stages what's actually on screen. */
+async function saveOpenDocumentIfDirty(absPath: string): Promise<void> {
+	const doc = vscode.workspace.textDocuments.find(d => d.uri.scheme === 'file' && d.uri.fsPath === absPath);
+	if (doc?.isDirty) {
+		await doc.save();
+	}
 }
 
 async function runGitOperation(title: string, op: () => Promise<void>, onSuccess: () => void): Promise<void> {

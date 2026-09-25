@@ -117,10 +117,6 @@
         "icon": "$(circle-slash)"
       },
       {
-        "command": "ggit.markConflictResolved",
-        "title": "Mark as Resolved"
-      },
-      {
         "command": "ggit.refresh",
         "title": "GGit: Refresh",
         "icon": "$(refresh)"
@@ -423,11 +419,6 @@
           "command": "ggit.deleteLocalBranch",
           "when": "view == ggitBranches && viewItem =~ /^branch-/",
           "group": "9_delete@1"
-        },
-        {
-          "command": "ggit.markConflictResolved",
-          "when": "view == ggitConflicts",
-          "group": "1_modification"
         },
         {
           "command": "ggit.applyStashItem",
