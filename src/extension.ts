@@ -647,6 +647,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		workingCopyProvider.refresh();
 		workingChangeDecorations.refresh();
 		void updateWorkingCopyBadge();
+		// The Commit tab shows the exact same staged+unstaged data as Working Copy (see
+		// CommitPanel.sendStaged) -- without this, editing/saving a file while it's already open left it
+		// stale until some *other*, full-refreshAll-triggering action happened to run (staging a file,
+		// fetching, etc.), even though the very point of it is to reflect live unstaged changes too.
+		CommitPanel.refreshIfOpen();
 	};
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument(doc => {
