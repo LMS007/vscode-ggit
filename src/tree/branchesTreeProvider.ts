@@ -12,6 +12,12 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
+	// Which branch names are currently rendered in the flat Recents/pinned-main section -- populated by
+	// getChildren and read by getTreeItem (see WorkingCopyTreeProvider.splitPaths for the same pattern),
+	// safe because VS Code always calls getChildren for a freshly-rendered level before asking for its
+	// items' TreeItems.
+	private pinnedNames = new Set<string>();
+
 	constructor(
 		private readonly gitService: GitService,
 		private readonly extensionUri: vscode.Uri,
@@ -43,6 +49,7 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 			const mainName = PINNED_BRANCHES.find(name => byName.has(name) && !recentNames.includes(name));
 
 			const shown = new Set([...recentNames, ...(mainName ? [mainName] : [])]);
+			this.pinnedNames = shown;
 			const remaining = branches.filter(b => !shown.has(b.name));
 
 			return [
@@ -80,13 +87,17 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 		item.id = node.id;
 		// A custom SVG (rather than ThemeIcon + ThemeColor) keeps this icon green even when
 		// the row is selected — VS Code recolors ThemeIcon colors to match selection state,
-		// but leaves custom icon images alone.
+		// but leaves custom icon images alone. HEAD keeps this regardless of pinned state -- it's the
+		// rarer, more operationally important signal ("this is what's checked out right now"), so it
+		// takes priority over the thumbtack every other pinned row gets.
 		item.iconPath = branch.isHead
 			? {
 					light: vscode.Uri.joinPath(this.extensionUri, 'media', 'target-green-light.svg'),
 					dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'target-green-dark.svg'),
 				}
-			: new vscode.ThemeIcon('git-branch');
+			: this.pinnedNames.has(branch.name)
+				? new vscode.ThemeIcon('pinned')
+				: new vscode.ThemeIcon('git-branch');
 		item.resourceUri = toBranchUri(branch.name, branch.isHead ? 'active' : branch.worktreePath ? 'checked-out-elsewhere' : 'none');
 		const descriptionParts = [
 			branch.isHead ? 'HEAD' : undefined,

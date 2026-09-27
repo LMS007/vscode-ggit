@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "1.3.0",
+  "version": "1.4.1",
   "publisher": "kylekeating",
   "license": "UNLICENSED",
   "private": true,
@@ -79,7 +79,7 @@
       {
         "command": "ggit.setPinnedBranchCount",
         "title": "GGit: Set Pinned Branch Count",
-        "icon": "$(pin)"
+        "icon": "$(pinned)"
       },
       {
         "command": "ggit.fetch",
