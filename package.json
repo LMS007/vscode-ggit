@@ -77,6 +77,11 @@
         "icon": "$(add)"
       },
       {
+        "command": "ggit.setPinnedBranchCount",
+        "title": "GGit: Set Pinned Branch Count",
+        "icon": "$(pin)"
+      },
+      {
         "command": "ggit.fetch",
         "title": "GGit: Fetch",
         "icon": "$(cloud-download)"
@@ -302,6 +307,11 @@
           "command": "ggit.rebase",
           "when": "view == ggitBranches",
           "group": "navigation@5"
+        },
+        {
+          "command": "ggit.setPinnedBranchCount",
+          "when": "view == ggitBranches",
+          "group": "navigation@6"
         },
         {
           "command": "ggit.searchRemotes",

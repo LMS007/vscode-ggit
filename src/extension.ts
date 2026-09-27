@@ -31,6 +31,7 @@ import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
 import { BranchesTreeProvider } from './tree/branchesTreeProvider';
 import { ConflictsTreeProvider } from './tree/conflictsTreeProvider';
+import { MAX_PINNED_BRANCH_COUNT, MIN_PINNED_BRANCH_COUNT, RecentBranches } from './tree/recentBranches';
 import { RemotesTreeProvider } from './tree/remotesTreeProvider';
 import { StashesTreeProvider } from './tree/stashesTreeProvider';
 import { WorkingChangeDecorationProvider } from './tree/workingChangeDecoration';
@@ -52,7 +53,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	const gitService = new GitService(workspaceFolder.uri.fsPath, message => output.appendLine(message));
 
-	const branchesProvider = new BranchesTreeProvider(gitService, context.extensionUri);
+	const recentBranches = new RecentBranches(context.workspaceState);
+	const branchesProvider = new BranchesTreeProvider(gitService, context.extensionUri, recentBranches);
 	const remotesProvider = new RemotesTreeProvider(gitService);
 	const workingCopyProvider = new WorkingCopyTreeProvider(gitService);
 	const stashesProvider = new StashesTreeProvider(gitService);
@@ -110,6 +112,13 @@ export function activate(context: vscode.ExtensionContext): void {
 	const updateActiveBranchLabel = async () => {
 		const current = await gitService.getCurrentBranch();
 		workingCopyView.description = current ? `${workspaceFolder.name} · ${current}` : workspaceFolder.name;
+		// Recorded here rather than only around GGit's own checkout commands, so a checkout run from the
+		// integrated terminal still updates Recents -- same "pick this up regardless of source" approach
+		// already used for rebase state above. Only actually refreshes the tree again on top of whatever
+		// refreshAll pass got us here when the branch genuinely changed, not on every routine refresh.
+		if (await recentBranches.syncCurrentBranch(current)) {
+			branchesProvider.refresh();
+		}
 	};
 
 	// The Conflicts view only shows at all while a rebase is in progress (see its `when` clause in
@@ -241,6 +250,24 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand('ggit.createBranch', () => {
 			CreateBranchPanel.createOrShow(context, gitService, refreshAll);
+		}),
+
+		vscode.commands.registerCommand('ggit.setPinnedBranchCount', async () => {
+			const input = await vscode.window.showInputBox({
+				prompt: `How many recently-used branches to pin at the top of the Branches view (${MIN_PINNED_BRANCH_COUNT}-${MAX_PINNED_BRANCH_COUNT})`,
+				value: String(recentBranches.getPinnedCount()),
+				validateInput: value => {
+					const n = Number(value);
+					return Number.isInteger(n) && n >= MIN_PINNED_BRANCH_COUNT && n <= MAX_PINNED_BRANCH_COUNT
+						? undefined
+						: `Enter a whole number between ${MIN_PINNED_BRANCH_COUNT} and ${MAX_PINNED_BRANCH_COUNT}.`;
+				},
+			});
+			if (input === undefined) {
+				return;
+			}
+			await recentBranches.setPinnedCount(Number(input));
+			branchesProvider.refresh();
 		}),
 
 		// The optional `remote` arg on fetch/pull/push/sync is only ever supplied by the History tab's

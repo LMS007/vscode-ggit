@@ -3,7 +3,8 @@ import * as vscode from 'vscode';
 import { GitService } from '../git/gitService';
 import { BranchInfo } from '../git/types';
 import { toBranchUri } from './activeBranchDecoration';
-import { BranchTreeNode, buildBranchTree, sortTree } from './branchTree';
+import { BranchTreeLeaf, BranchTreeNode, buildBranchTree, sortTree } from './branchTree';
+import { RecentBranches } from './recentBranches';
 
 const PINNED_BRANCHES = ['main', 'master'];
 
@@ -11,7 +12,11 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-	constructor(private readonly gitService: GitService, private readonly extensionUri: vscode.Uri) {}
+	constructor(
+		private readonly gitService: GitService,
+		private readonly extensionUri: vscode.Uri,
+		private readonly recentBranches: RecentBranches
+	) {}
 
 	refresh(): void {
 		this._onDidChangeTreeData.fire();
@@ -23,7 +28,30 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 		}
 		return this.gitService.time('BranchesTreeProvider.getChildren', async () => {
 			const branches = await this.gitService.listLocalBranches();
-			return sortTree(buildBranchTree(branches, b => b.name), PINNED_BRANCHES);
+			const byName = new Map(branches.map(b => [b.name, b]));
+
+			// The current branch always wins the top slot regardless of what's in the persisted
+			// history -- self-healing if a checkout from outside GGit (or the very first run ever) never
+			// got recorded, rather than depending on that history being perfectly complete.
+			const current = branches.find(b => b.isHead)?.name;
+			const persisted = this.recentBranches.get().filter(name => byName.has(name));
+			const pinnedCount = this.recentBranches.getPinnedCount();
+			const recentNames = dedupe(current ? [current, ...persisted] : persisted).slice(0, pinnedCount);
+
+			// main/master only gets its own pinned row here when it *isn't* already one of the recents
+			// above -- otherwise it'd render twice.
+			const mainName = PINNED_BRANCHES.find(name => byName.has(name) && !recentNames.includes(name));
+
+			const shown = new Set([...recentNames, ...(mainName ? [mainName] : [])]);
+			const remaining = branches.filter(b => !shown.has(b.name));
+
+			return [
+				// Flat -- unlike the grouped tree below, a recent/pinned row always shows its full name,
+				// never just its last path segment, since there's no folder here to supply the rest.
+				...recentNames.map(name => flatLeaf(byName.get(name)!)),
+				...(mainName ? [flatLeaf(byName.get(mainName)!)] : []),
+				...sortTree(buildBranchTree(remaining, b => b.name), PINNED_BRANCHES),
+			];
 		});
 	}
 
@@ -82,6 +110,17 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 		};
 		return item;
 	}
+}
+
+/** A leaf for the Recents/pinned-main rows -- same shape buildBranchTree would produce for a
+ * slash-free branch, except `name` is always the branch's full name rather than its last path
+ * segment, since these render outside any folder that would otherwise supply the rest of it. */
+function flatLeaf(branch: BranchInfo): BranchTreeLeaf<BranchInfo> {
+	return { kind: 'leaf', name: branch.name, id: branch.name, item: branch };
+}
+
+function dedupe(names: string[]): string[] {
+	return [...new Set(names)];
 }
 
 /** "↑9" ahead, "↓8" behind, "↑2 ↓3" diverged, or undefined if up to date / no upstream. There's no
