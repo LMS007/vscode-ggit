@@ -435,9 +435,9 @@ export class BranchHistoryPanel {
 		.toolbar-btn {
 			display: flex;
 			align-items: center;
-			gap: 6px;
-			height: 28px;
-			padding: 0 10px;
+			gap: 5px;
+			height: 24px;
+			padding: 0 8px;
 			border: 1px solid rgba(200, 200, 200, 0.4);
 			border-radius: 4px;
 			background: transparent;
@@ -457,7 +457,7 @@ export class BranchHistoryPanel {
 			background-color: var(--vscode-toolbar-hoverBackground);
 		}
 		.toolbar-btn .codicon {
-			font-size: 16px;
+			font-size: 10px;
 		}
 		.toolbar-btn-label {
 			white-space: nowrap;
@@ -472,8 +472,8 @@ export class BranchHistoryPanel {
 		 * dropdown so it gets native OS combobox behavior (keyboard nav, etc.) for free, just themed
 		 * to sit alongside the toolbar buttons instead of looking like a stray form control. */
 		.toolbar-remote-select {
-			height: 28px;
-			padding: 0 6px;
+			height: 24px;
+			padding: 0 5px;
 			border: 1px solid rgba(200, 200, 200, 0.4);
 			border-radius: 4px;
 			background-color: var(--vscode-dropdown-background, transparent);

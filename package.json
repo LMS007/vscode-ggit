@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "kylekeating",
   "license": "UNLICENSED",
   "private": true,
