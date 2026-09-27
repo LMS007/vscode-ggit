@@ -6,6 +6,7 @@ import { CommitPanel } from './commit/commitPanel';
 import { BranchHistoryPanel } from './history/branchHistoryPanel';
 import { CommitFilesPanel } from './history/commitFilesPanel';
 import { AddRemotePanel } from './remote/addRemotePanel';
+import { RebaseConflictsPanel } from './rebase/rebaseConflictsPanel';
 import { openDiffForWorkingChange } from './diff/openDiff';
 import { GGitShowContentProvider, GGIT_SHOW_SCHEME } from './diff/showContentProvider';
 import {
@@ -55,7 +56,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	const remotesProvider = new RemotesTreeProvider(gitService);
 	const workingCopyProvider = new WorkingCopyTreeProvider(gitService);
 	const stashesProvider = new StashesTreeProvider(gitService);
-	const conflictsProvider = new ConflictsTreeProvider(gitService);
+	const conflictsProvider = new ConflictsTreeProvider();
 	const commitLauncherProvider = new CommitLauncherViewProvider(gitService, () =>
 		vscode.commands.executeCommand('ggit.commit')
 	);
@@ -75,10 +76,8 @@ export function activate(context: vscode.ExtensionContext): void {
 	// discussion: there's no "switch worktree" yet, so this never needs to change mid-session).
 	branchesView.description = workspaceFolder.name;
 
-	const conflictsView = vscode.window.createTreeView('ggitConflicts', {
-		treeDataProvider: conflictsProvider,
-		canSelectMany: true,
-	});
+	// Single fixed row, no multi-select/checkboxes needed -- see ConflictsTreeProvider.
+	const conflictsView = vscode.window.createTreeView('ggitConflicts', { treeDataProvider: conflictsProvider });
 
 	const remotesView = vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider });
 	// See branchesView above -- description here gets temporarily overridden by the search-filter
@@ -116,9 +115,18 @@ export function activate(context: vscode.ExtensionContext): void {
 	// The Conflicts view only shows at all while a rebase is in progress (see its `when` clause in
 	// package.json) — this is what flips that on/off, checked on every refresh so entering/leaving a
 	// conflicted rebase state (via GGit's own actions or the integrated terminal) is picked up promptly.
+	// Also what auto-opens the Rebase tab the moment a rebase starts (including one already in progress
+	// when VS Code itself starts up, since this runs once at activation too, below) -- wasRebaseInProgress
+	// starts false, so only a genuine false-to-true transition opens it, not every refresh while it's
+	// already open.
+	let wasRebaseInProgress = false;
 	const updateRebaseContext = async () => {
 		const inProgress = await gitService.isRebaseInProgress();
 		void vscode.commands.executeCommand('setContext', 'ggit.rebaseInProgress', inProgress);
+		if (inProgress && !wasRebaseInProgress) {
+			RebaseConflictsPanel.createOrShow(context, gitService, refreshAll);
+		}
+		wasRebaseInProgress = inProgress;
 	};
 
 	const refreshAll = () => {
@@ -135,6 +143,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		void updateActiveBranchLabel();
 		CommitPanel.refreshIfOpen();
 		void commitLauncherProvider.refresh();
+		RebaseConflictsPanel.refreshIfOpen();
 	};
 
 	const isLocalBranchDoubleClick = createDoubleClickGuard();
@@ -167,26 +176,6 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}
 		refreshAll();
-	});
-
-	conflictsView.onDidChangeCheckboxState(async e => {
-		// There's no "unresolve" affordance -- a row's box always starts Unchecked (see
-		// ConflictsTreeProvider), so only the Checked direction is meaningful here.
-		const toResolve = e.items.filter(([, state]) => state === vscode.TreeItemCheckboxState.Checked).map(([file]) => file);
-		if (toResolve.length === 0) {
-			return;
-		}
-		await runGitOperation(
-			`Marking ${toResolve.length} file${toResolve.length === 1 ? '' : 's'} as resolved…`,
-			async () => {
-				for (const file of toResolve) {
-					output.appendLine(`checkbox: "${file.path}" -> Checked (mark resolved)`);
-					await saveOpenDocumentIfDirty(path.join(gitService.repoRoot, file.path));
-					await gitService.stageFile(file.path);
-				}
-			},
-			refreshAll
-		);
 	});
 
 	void updateWorkingCopyBadge();
@@ -296,6 +285,12 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			return runGitOperation('Aborting rebase…', () => gitService.rebaseAbort(), refreshAll);
+		}),
+
+		// The sidebar Conflicts view's only row -- opens (or refocuses) the Rebase tab, where resolving
+		// actually happens. See conflictsTreeProvider.ts and rebaseConflictsPanel.ts.
+		vscode.commands.registerCommand('ggit.openRebaseTab', () => {
+			RebaseConflictsPanel.createOrShow(context, gitService, refreshAll);
 		}),
 
 		vscode.commands.registerCommand('ggit.openWorkingChangeDiff', async (file: WorkingChangeFile) => {
@@ -679,17 +674,6 @@ function createDoubleClickGuard(thresholdMs = 400): (key: string) => boolean {
 		lastTime = now;
 		return isDouble;
 	};
-}
-
-/** Resolving a conflict by hand in an open editor doesn't put the fix on disk until it's saved, and
- * `git add` (what marking a conflict resolved actually does) only ever sees disk content -- an
- * unsaved editor would silently stage the still-conflicted version. Saves it first if it's open and
- * dirty, so checking the box always stages what's actually on screen. */
-async function saveOpenDocumentIfDirty(absPath: string): Promise<void> {
-	const doc = vscode.workspace.textDocuments.find(d => d.uri.scheme === 'file' && d.uri.fsPath === absPath);
-	if (doc?.isDirty) {
-		await doc.save();
-	}
 }
 
 async function runGitOperation(title: string, op: () => Promise<void>, onSuccess: () => void): Promise<void> {

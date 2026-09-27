@@ -138,7 +138,34 @@ async function main() {
 		],
 	});
 
-	const contexts = [extensionCtx, webviewCtx, commitFilesWebviewCtx, createBranchWebviewCtx, commitWebviewCtx, addRemoteWebviewCtx];
+	// The rebase-conflicts tab is a sixth, independent webview (a paused-commit file checklist, no
+	// commit browser), so it gets its own bundle rather than sharing another panel's.
+	const rebaseWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/rebase/rebaseWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/rebaseWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
+	const contexts = [
+		extensionCtx,
+		webviewCtx,
+		commitFilesWebviewCtx,
+		createBranchWebviewCtx,
+		commitWebviewCtx,
+		addRemoteWebviewCtx,
+		rebaseWebviewCtx,
+	];
 
 	if (watch) {
 		await Promise.all(contexts.map(ctx => ctx.watch()));

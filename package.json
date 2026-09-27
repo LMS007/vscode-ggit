@@ -319,19 +319,9 @@
           "group": "navigation@2"
         },
         {
-          "command": "ggit.rebaseContinue",
-          "when": "view == ggitConflicts",
-          "group": "navigation@0"
-        },
-        {
-          "command": "ggit.rebaseSkip",
-          "when": "view == ggitConflicts",
-          "group": "navigation@1"
-        },
-        {
           "command": "ggit.rebaseAbort",
           "when": "view == ggitConflicts",
-          "group": "navigation@2"
+          "group": "navigation@0"
         },
         {
           "command": "ggit.applyStash",

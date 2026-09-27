@@ -17,6 +17,15 @@ export function toCreateCommitUri(): vscode.Uri {
 	return vscode.Uri.from({ scheme: GGIT_WORKING_CHANGE_SCHEME, path: '/__create_commit__', query: CREATE_COMMIT_MARKER });
 }
 
+/** Same trick, for the Conflicts view's single "Resolve Conflicts" row (see conflictsTreeProvider.ts)
+ * -- colored like a conflicted file even though it isn't one, since it's the entry point to actually
+ * resolving them. */
+const RESOLVE_CONFLICTS_MARKER = '__resolve_conflicts__';
+
+export function toResolveConflictsUri(): vscode.Uri {
+	return vscode.Uri.from({ scheme: GGIT_WORKING_CHANGE_SCHEME, path: '/__resolve_conflicts__', query: RESOLVE_CONFLICTS_MARKER });
+}
+
 const STATUS_COLOR_TOKENS: Record<FileStatus, string> = {
 	A: 'gitDecoration.addedResourceForeground',
 	M: 'gitDecoration.modifiedResourceForeground',
@@ -43,6 +52,9 @@ export class WorkingChangeDecorationProvider implements vscode.FileDecorationPro
 		if (uri.query === CREATE_COMMIT_MARKER) {
 			// Same link-blue VS Code itself uses for clickable text — no real file status to badge.
 			return { color: new vscode.ThemeColor('textLink.foreground') };
+		}
+		if (uri.query === RESOLVE_CONFLICTS_MARKER) {
+			return { color: new vscode.ThemeColor(STATUS_COLOR_TOKENS.U) };
 		}
 		const status = uri.query as FileStatus;
 		return {

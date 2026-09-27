@@ -8,6 +8,7 @@ import {
 	CommitInfo,
 	ConflictedFile,
 	FileStatus,
+	RebaseProgress,
 	RefBadge,
 	RemoteBranchInfo,
 	StashInfo,
@@ -669,6 +670,40 @@ export class GitService {
 		return status.conflicted.map(p => ({ path: p }));
 	}
 
+	/** git's progress through the current rebase -- which commit is being applied (1-based) out of
+	 * how many, plus (merge backend only) its subject and the branch being rebased. Undefined if no
+	 * rebase is in progress. Drives the Rebase tab's header and its Continue-vs-Finish button choice.
+	 * git tracks this in plain files under .git/rebase-merge (the modern default backend) or
+	 * .git/rebase-apply (the older apply-based one) -- the same files a shell prompt reads to show
+	 * "REBASE 2/5". */
+	async getRebaseProgress(): Promise<RebaseProgress | undefined> {
+		const gitDir = await this.getGitDir();
+		const mergeDir = path.join(gitDir, 'rebase-merge');
+		if (fs.existsSync(mergeDir)) {
+			const current = Number(readFileIfExists(path.join(mergeDir, 'msgnum')) ?? 0);
+			const total = Number(readFileIfExists(path.join(mergeDir, 'end')) ?? 0);
+			const branchName = parseHeadName(readFileIfExists(path.join(mergeDir, 'head-name')));
+			// The last line of `done` is the todo-list entry currently being applied -- git appends it
+			// the moment it starts processing a step, before that step can fail/conflict, so it's still
+			// there (as the final line) throughout the pause.
+			const doneLines = (readFileIfExists(path.join(mergeDir, 'done')) ?? '')
+				.trim()
+				.split('\n')
+				.filter(Boolean);
+			return { current, total, subject: parseTodoSubject(doneLines.at(-1)), branchName };
+		}
+		const applyDir = path.join(gitDir, 'rebase-apply');
+		if (fs.existsSync(applyDir)) {
+			// The older backend doesn't keep a `done`/todo-list equivalent this cheap to read, so the
+			// current commit's subject just isn't available here -- only the branch and progress count.
+			const current = Number(readFileIfExists(path.join(applyDir, 'next')) ?? 0);
+			const total = Number(readFileIfExists(path.join(applyDir, 'last')) ?? 0);
+			const branchName = parseHeadName(readFileIfExists(path.join(applyDir, 'head-name')));
+			return { current, total, subject: undefined, branchName };
+		}
+		return undefined;
+	}
+
 	/** Whichever branch is currently checked out gets rebased onto `branchName`. `--autostash` means a
 	 * dirty working tree never blocks starting a rebase — it's stashed automatically beforehand and
 	 * restored after, so there's no "you have local changes" failure mode to expose a checkbox for.
@@ -796,6 +831,28 @@ function parseGitHubOwnerRepo(url: string): { owner: string; repo: string } | un
 	const match =
 		url.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/) ?? url.match(/^https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
 	return match ? { owner: match[1], repo: match[2] } : undefined;
+}
+
+function readFileIfExists(filePath: string): string | undefined {
+	try {
+		return fs.readFileSync(filePath, 'utf8').trim();
+	} catch {
+		return undefined;
+	}
+}
+
+/** `head-name` holds the full ref being rebased, e.g. "refs/heads/branch-b" (or, for a detached-HEAD
+ * rebase, the literal string "detached"). */
+function parseHeadName(headName: string | undefined): string | undefined {
+	if (!headName || headName === 'detached') {
+		return undefined;
+	}
+	return headName.startsWith('refs/heads/') ? headName.slice('refs/heads/'.length) : headName;
+}
+
+/** Parses one line of git's rebase-todo syntax, e.g. "pick a1b2c3d Fix the thing" -> "Fix the thing". */
+function parseTodoSubject(todoLine: string | undefined): string | undefined {
+	return todoLine?.match(/^(?:pick|p)\s+\S+\s+(.*)$/)?.[1];
 }
 
 /** Remote branch names always start with their own remote's name (e.g. "origin/main",

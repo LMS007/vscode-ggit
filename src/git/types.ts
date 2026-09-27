@@ -64,6 +64,21 @@ export interface ConflictedFile {
 	path: string;
 }
 
+/** git's progress through an in-progress rebase -- see GitService.getRebaseProgress. */
+export interface RebaseProgress {
+	/** 1-based index of the commit currently being applied. */
+	current: number;
+	/** Total commits this rebase is replaying. */
+	total: number;
+	/** The current commit's subject line -- only available on the modern merge-based rebase backend
+	 * (.git/rebase-merge), undefined on the older apply-based one (.git/rebase-apply). */
+	subject: string | undefined;
+	/** The branch being rebased -- undefined if it can't be determined (e.g. it was a detached HEAD
+	 * rebase). `getCurrentBranch()` can't be used for this mid-rebase: HEAD is detached for the whole
+	 * span of a rebase, so it would just report no branch at all. */
+	branchName: string | undefined;
+}
+
 export interface StashInfo {
 	/** "stash@{0}" — the reflog-style ref git's own stash commands expect. */
 	ref: string;
