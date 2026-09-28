@@ -4,6 +4,10 @@
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
   "version": "1.4.2",
   "publisher": "kylekeating",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LMS007/vscode-ggit.git"
+  },
   "license": "UNLICENSED",
   "private": true,
   "engines": {

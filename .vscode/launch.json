@@ -23,12 +23,19 @@
 			"request": "launch",
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}",
-				"/path/to/large-repo"
+				"${input:largeRepoPath}"
 			],
 			"outFiles": [
 				"${workspaceFolder}/dist/**/*.js"
 			],
 			"preLaunchTask": "${defaultBuildTask}"
+		}
+	],
+	"inputs": [
+		{
+			"id": "largeRepoPath",
+			"type": "promptString",
+			"description": "Absolute path to a large local git repo to open in the Extension Development Host"
 		}
 	]
 }

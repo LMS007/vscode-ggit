@@ -37,6 +37,19 @@ export class GitService {
 		this.logger?.(message);
 	}
 
+	/** Absolute path for a repo-relative one, refusing anything that would land outside repoRoot. Paths
+	 * git itself reports are always root-relative with no "..", so this only ever matters for a path
+	 * that arrived from somewhere less trustworthy (a webview message, another extension's command
+	 * call) -- those must never turn into an open/reveal/save of an arbitrary file on disk. */
+	resolveRepoPath(relPath: string): string {
+		const absolute = path.resolve(this.repoRoot, relPath);
+		const relative = path.relative(this.repoRoot, absolute);
+		if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+			throw new Error(`"${relPath}" is outside the repository.`);
+		}
+		return absolute;
+	}
+
 	/** Times an async block and logs it to the "GGit" output channel -- added specifically to
 	 * diagnose Remote-SSH slowness (each view load, and the git spawns underneath it, is a lot more
 	 * exposed to network/disk latency on the remote host than the same work is locally), so this can
@@ -190,6 +203,7 @@ export class GitService {
 	 * etc. all surface as a raw git error), same convention as createBranch/renameBranch above rather
 	 * than this extension trying to re-implement git's own name/URL rules. */
 	async addRemote(name: string, url: string): Promise<void> {
+		assertNotOptionLike(name, 'remote name');
 		await this.git.raw(['remote', 'add', name, url]);
 	}
 
@@ -232,6 +246,7 @@ export class GitService {
 	}
 
 	async renameBranch(oldName: string, newName: string): Promise<void> {
+		assertNotOptionLike(newName, 'branch name');
 		await this.git.raw(['branch', '-m', oldName, newName]);
 	}
 
@@ -327,6 +342,7 @@ export class GitService {
 
 	/** Creates a new local branch off `startPoint`. `track` sets it up to track `startPoint` for push/pull; `checkout` switches to it immediately. */
 	async createBranch(name: string, startPoint: string, options: { track: boolean; checkout: boolean }): Promise<void> {
+		assertNotOptionLike(name, 'branch name');
 		const trackFlag = options.track ? '--track' : '--no-track';
 		if (options.checkout) {
 			await this.git.raw(['checkout', '-b', name, trackFlag, startPoint]);
@@ -389,6 +405,7 @@ export class GitService {
 
 	/** The commit's first parent, or git's well-known empty-tree SHA for a root commit. */
 	async getDiffBase(sha: string): Promise<string> {
+		assertObjectId(sha);
 		const revList = (await this.git.raw(['rev-list', '--parents', '-n', '1', sha])).trim().split(' ');
 		return revList.length > 1 ? revList[1] : EMPTY_TREE_SHA;
 	}
@@ -398,6 +415,10 @@ export class GitService {
 	 * uncommitted changes. Either way, commits after `sha` stop being part of this branch (though
 	 * they remain recoverable via the reflog for a while). */
 	async resetHead(sha: string, mode: 'mixed' | 'hard'): Promise<void> {
+		assertObjectId(sha);
+		if (mode !== 'mixed' && mode !== 'hard') {
+			throw new Error(`Unsupported reset mode: "${mode}"`);
+		}
 		await this.git.raw(['reset', `--${mode}`, sha]);
 	}
 
@@ -405,15 +426,18 @@ export class GitService {
 	 * conflict message) if it can't apply cleanly — there's no in-extension conflict resolution, so
 	 * that has to be sorted out in the terminal. */
 	async cherryPick(sha: string): Promise<void> {
+		assertObjectId(sha);
 		await this.git.raw(['cherry-pick', sha]);
 	}
 
 	/** A single-commit patch in the standard git-am-able format (commit message, author, date included). */
 	async getPatch(sha: string): Promise<string> {
+		assertObjectId(sha);
 		return this.git.raw(['format-patch', '-1', sha, '--stdout']);
 	}
 
 	async getCommitFiles(sha: string): Promise<ChangedFile[]> {
+		assertObjectId(sha);
 		const base = await this.time(`getCommitFiles(${sha}): getDiffBase`, () => this.getDiffBase(sha));
 		const [nameStatusOut, numstatOut] = await this.time(`getCommitFiles(${sha}): diff name-status + numstat`, () =>
 			Promise.all([
@@ -474,6 +498,7 @@ export class GitService {
 	 * `git status` comes back clean after stashing an untracked file, and `stash apply` restores it
 	 * correctly — the file was never actually missing from the stash, only from this file list. */
 	async getStashFiles(stashHash: string): Promise<ChangedFile[]> {
+		assertObjectId(stashHash);
 		const trackedFiles = await this.getCommitFiles(stashHash);
 		let untrackedRef: string;
 		try {
@@ -648,10 +673,12 @@ export class GitService {
 	}
 
 	/** `git apply` only reads patches from a file, not stdin via simple-git's API -- writes the patch
-	 * to a scratch file under the OS temp dir and cleans it up immediately after, success or failure. */
+	 * to a scratch file under the OS temp dir and cleans it up immediately after, success or failure.
+	 * Created exclusively (`wx`) and owner-only (0600) so a pre-existing file or symlink at that name
+	 * is refused rather than followed, and other local users can't read the staged source. */
 	private async applyPatchToIndex(patch: string, options: { reverse?: boolean } = {}): Promise<void> {
 		const tmpFile = path.join(os.tmpdir(), `ggit-hunk-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
-		await fs.promises.writeFile(tmpFile, patch, 'utf8');
+		await fs.promises.writeFile(tmpFile, patch, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
 		try {
 			const args = ['apply', '--cached'];
 			if (options.reverse) {
@@ -738,6 +765,26 @@ export class GitService {
 			throw new Error('Cannot pull: HEAD is detached (no current branch).');
 		}
 		await this.git.pull(remote, current);
+	}
+}
+
+/** Every commit/stash hash handed to this service is a full or abbreviated hex object id -- never a
+ * symbolic ref, and never anything git could read as an option. Revision arguments sit in positional
+ * slots that a `--` can't protect (`rev-list -n 1 --output=x` is parsed as an option regardless of
+ * what precedes it, and git opens that file before failing), so the shape is checked up front rather
+ * than trusting whoever sent it -- e.g. a History webview message -- to have passed a real hash. */
+function assertObjectId(sha: string): void {
+	if (!/^[0-9a-f]{4,64}$/.test(sha)) {
+		throw new Error(`Not a valid commit hash: "${sha}"`);
+	}
+}
+
+/** Rejects a user-typed name that git's option parser would read as a flag instead of a name --
+ * verified that `git branch --no-track -D <startPoint>` (the result of naming a branch "-D") deletes
+ * startPoint outright, so this can't be left to git's own name validation, which runs too late. */
+function assertNotOptionLike(name: string, what: string): void {
+	if (name.startsWith('-')) {
+		throw new Error(`Invalid ${what} "${name}": it can't start with "-".`);
 	}
 }
 

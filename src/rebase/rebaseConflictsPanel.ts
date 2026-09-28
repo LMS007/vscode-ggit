@@ -1,4 +1,3 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { saveOpenDocumentIfDirty } from '../documentUtils';
 import { GitService } from '../git/gitService';
@@ -103,7 +102,7 @@ export class RebaseConflictsPanel {
 				break;
 			case 'setResolved':
 				try {
-					await saveOpenDocumentIfDirty(path.join(this.gitService.repoRoot, msg.path));
+					await saveOpenDocumentIfDirty(this.gitService.resolveRepoPath(msg.path));
 					await this.gitService.stageFile(msg.path);
 					this.onChanged();
 					await this.refresh();
@@ -113,7 +112,7 @@ export class RebaseConflictsPanel {
 				break;
 			case 'openFile':
 				try {
-					const uri = vscode.Uri.file(path.join(this.gitService.repoRoot, msg.path));
+					const uri = vscode.Uri.file(this.gitService.resolveRepoPath(msg.path));
 					const openGroup = findOpenTextTabGroup(uri);
 					if (openGroup) {
 						// Already open somewhere (most likely left over from resolving this same file a

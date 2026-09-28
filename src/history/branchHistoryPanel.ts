@@ -49,6 +49,10 @@ const TOOLBAR_BUTTONS: {
 	{ command: 'ggit.commit', icon: 'check', label: 'Commit', primary: true, separatorBefore: true },
 ];
 
+/** The only commands the webview's 'runAction' message may trigger -- anything else is dropped
+ * host-side, so the webview can never act as a generic "run any VS Code command" bridge. */
+const TOOLBAR_COMMANDS = new Set(TOOLBAR_BUTTONS.map(b => b.command));
+
 export class BranchHistoryPanel {
 	private static current: BranchHistoryPanel | undefined;
 
@@ -64,6 +68,10 @@ export class BranchHistoryPanel {
 	// undefined until the first loadCommits resolves an effective one (persisted choice if still
 	// valid, else "origin" if present, else whatever's first) -- see loadCommits.
 	private selectedRemote: string | undefined;
+	/** The GitHub URL last handed to the webview (see 'commits'.githubUrl) -- the only URL the
+	 * 'openExternalUrl' message is allowed to open, so nothing the webview renders can turn it into
+	 * an open-any-URL bridge. */
+	private githubUrl: string | undefined;
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -89,7 +97,14 @@ export class BranchHistoryPanel {
 		);
 		this.panel.webview.html = this.getHtml(context);
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-		this.panel.webview.onDidReceiveMessage((msg: WebviewMessage) => this.handleMessage(msg), null, this.disposables);
+		// One safety net for every message: a handler that throws (e.g. a path or hash that fails
+		// validation in GitService) surfaces as a normal error toast, not an unhandled rejection.
+		this.panel.webview.onDidReceiveMessage(
+			(msg: WebviewMessage) =>
+				void this.handleMessage(msg).catch(err => vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`)),
+			null,
+			this.disposables
+		);
 	}
 
 	static createOrShow(context: vscode.ExtensionContext, gitService: GitService, branchName: string): void {
@@ -141,6 +156,7 @@ export class BranchHistoryPanel {
 				this.selectedRemote = effectiveRemote;
 				void this.context.globalState.update(SELECTED_REMOTE_KEY, effectiveRemote);
 			}
+			this.githubUrl = githubUrl;
 			this.post({
 				type: 'commits',
 				branchName: this.branchName,
@@ -260,14 +276,21 @@ export class BranchHistoryPanel {
 				}
 				break;
 			case 'setSplit':
-				void this.context.globalState.update(SPLIT_STATE_KEY, msg.commitsPercent);
+				// Stored value ends up interpolated into the panel's HTML (data-initial-split), so only a
+				// real number is ever persisted.
+				if (typeof msg.commitsPercent === 'number' && Number.isFinite(msg.commitsPercent)) {
+					void this.context.globalState.update(SPLIT_STATE_KEY, msg.commitsPercent);
+				}
 				break;
 			case 'setRemote':
 				this.selectedRemote = msg.remote;
 				void this.context.globalState.update(SELECTED_REMOTE_KEY, msg.remote);
 				break;
 			case 'runAction':
-				void vscode.commands.executeCommand(msg.command, msg.remote);
+				// Only the toolbar's own commands -- see TOOLBAR_COMMANDS.
+				if (TOOLBAR_COMMANDS.has(msg.command)) {
+					void vscode.commands.executeCommand(msg.command, msg.remote);
+				}
 				break;
 			case 'resetHead':
 				try {
@@ -300,17 +323,20 @@ export class BranchHistoryPanel {
 				await vscode.env.clipboard.writeText(
 					msg.mode === 'relative'
 						? msg.path.split('/').join(path.sep)
-						: path.join(this.gitService.repoRoot, msg.path)
+						: this.gitService.resolveRepoPath(msg.path)
 				);
 				break;
 			case 'revealFileInExplorer':
-				void vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(path.join(this.gitService.repoRoot, msg.path)));
+				void vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(this.gitService.resolveRepoPath(msg.path)));
 				break;
 			case 'revealFileInOS':
-				void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(path.join(this.gitService.repoRoot, msg.path)));
+				void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(this.gitService.resolveRepoPath(msg.path)));
 				break;
 			case 'openExternalUrl':
-				void vscode.env.openExternal(vscode.Uri.parse(msg.url));
+				// Only the URL this panel itself computed -- see the githubUrl field.
+				if (this.githubUrl && msg.url === this.githubUrl) {
+					void vscode.env.openExternal(vscode.Uri.parse(this.githubUrl));
+				}
 				break;
 		}
 	}
@@ -321,7 +347,7 @@ export class BranchHistoryPanel {
 	 * first (rather than letting vscode.open fail raw) since the file may have since been renamed or
 	 * deleted -- that's the "(if it can be)" case. */
 	private async openFileForEditing(relPath: string): Promise<void> {
-		const uri = vscode.Uri.file(path.join(this.gitService.repoRoot, relPath));
+		const uri = vscode.Uri.file(this.gitService.resolveRepoPath(relPath));
 		try {
 			await vscode.workspace.fs.stat(uri);
 		} catch {
@@ -367,7 +393,9 @@ export class BranchHistoryPanel {
 			vscode.Uri.joinPath(context.extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css')
 		);
 		const nonce = getNonce();
-		const initialSplitPercent = context.globalState.get<number>(SPLIT_STATE_KEY, 60);
+		// Re-checked on the way out too (not just on write, see 'setSplit') since this lands in the HTML.
+		const storedSplit = context.globalState.get<unknown>(SPLIT_STATE_KEY);
+		const initialSplitPercent = typeof storedSplit === 'number' && Number.isFinite(storedSplit) ? storedSplit : 60;
 		// Mirrors the wording VS Code's own Explorer context menu uses for this per OS -- computed here
 		// (extension host, so process.platform is the real OS) rather than in the webview, since a
 		// package.json-style static title can't vary by platform the way this one needs to.

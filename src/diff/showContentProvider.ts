@@ -9,6 +9,12 @@ export const EMPTY_REF = '__ggit_empty__';
 /** Sentinel ref meaning "the staged (index) copy of this file" — git's `:path` show syntax. */
 export const INDEX_REF = '__ggit_index__';
 
+/** The only ref shapes the extension itself ever puts in a ggit-show URI besides the two sentinels
+ * above: a hex object id (commit SHAs and the empty-tree SHA, see openDiff.ts) or the literal HEAD.
+ * Anything else is refused before it reaches `git show`, so a crafted URI (from a restored editor or
+ * another extension) can't smuggle an option such as `--output=` in through the ref slot. */
+const SAFE_REF = /^(?:HEAD|[0-9a-f]{4,64})$/;
+
 export function toGGitShowUri(relPath: string, ref: string): vscode.Uri {
 	const normalized = relPath.startsWith('/') ? relPath : `/${relPath}`;
 	return vscode.Uri.from({
@@ -41,6 +47,9 @@ export class GGitShowContentProvider implements vscode.TextDocumentContentProvid
 	async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
 		const ref = new URLSearchParams(uri.query).get('ref');
 		if (!ref || ref === EMPTY_REF) {
+			return '';
+		}
+		if (ref !== INDEX_REF && !SAFE_REF.test(ref)) {
 			return '';
 		}
 		const relPath = uri.path.replace(/^\//, '');
