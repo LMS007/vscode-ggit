@@ -1,17 +1,19 @@
 # GGit
 
 A git UI for VS Code — Working Copy, Branches, Remotes, and Stashes in the sidebar,
-plus a dedicated branch-history panel with search. Personal project, not on the Marketplace —
-install from a locally-built `.vsix` (see **Installing** below).
+plus a dedicated branch-history panel with search. Not on the Marketplace yet — install the `.vsix`
+from the [Releases page](https://github.com/LMS007/vscode-ggit/releases), or build one locally (see
+**Installing** below).
 
 ## Installing
 
-**Prerequisites:** Node.js + npm, and the `code` CLI on your `PATH` (see below if `code
---version` fails).
+**Prerequisites:** the `code` CLI on your `PATH` (see below if `code --version` fails). Node.js +
+npm only if you build the `.vsix` yourself.
 
-1. `npm install`
-2. `npx vsce package` — produces `vscode-ggit-<version>.vsix` in the project root.
-3. Install it:
+1. Get a `.vsix`: download `vscode-ggit-<version>.vsix` from the
+   [Releases page](https://github.com/LMS007/vscode-ggit/releases), or build it yourself with
+   `npm install && npx vsce package` (it lands in the project root).
+2. Install it:
    - **Locally:** `code --install-extension vscode-ggit-<version>.vsix`, or in VS Code:
      Extensions view → `...` menu → **Install from VSIX...**.
    - **On a remote host** (SSH, Codespaces, WSL): from a terminal on your *local* machine (not
@@ -20,9 +22,9 @@ install from a locally-built `.vsix` (see **Installing** below).
      This uploads and installs in one step. If you'd rather copy the file over yourself first
      (`scp`), run the plain `code --install-extension <path-on-remote>` from the integrated
      terminal *inside* the already-open remote VS Code window instead.
-4. Reload the window (Command Palette → **Developer: Reload Window**).
+3. Reload the window (Command Palette → **Developer: Reload Window**).
 
-Reinstalling after a change is the same three steps — VS Code replaces the previous version in
+Reinstalling after a change is the same steps — VS Code replaces the previous version in
 place.
 
 ### Getting the `code` CLI on your PATH
@@ -117,3 +119,8 @@ it off once done. Continue/Skip/Abort in the toolbar.
 - `npm run watch` — type checker + esbuild in watch mode.
 - `F5` launches an Extension Development Host with GGit loaded from source.
 - `npm run check-types` / `npm run lint` — same checks packaging runs.
+- **Releasing:** bump `version` in `package.json`, commit, push to `main`. The
+  [Release workflow](.github/workflows/release.yml) builds the `.vsix`, tags that commit
+  `v<version>`, and publishes a GitHub Release with it attached. Pushes to `package.json` that
+  don't change the version are no-ops. Set a `VSCE_PAT` repository secret to also publish to the
+  VS Code Marketplace (see the workflow for details).

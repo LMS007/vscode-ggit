@@ -1,0 +1,109 @@
+# Publishes a GitHub Release, with the built .vsix attached, whenever the version in package.json
+# changes on main. The release step creates the v<version> tag on that same commit, so the whole
+# release flow is: bump "version" in package.json, commit, push main.
+#
+# Pushes that touch package.json without changing the version (dependency bumps, etc.) still start
+# the job but stop at "already released". A manual run (Actions tab -> Release -> "Run workflow")
+# builds and uploads the .vsix as a workflow artifact only -- unless its "publish" box is ticked, in
+# which case it also tags and releases the current version if that hasn't happened yet (this is how
+# the very first release gets cut without a version bump).
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Also tag + release the current package.json version, if not released yet'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# Two pushes in quick succession must not race to create the same release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Package and release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Keep in step with mise.toml.
+          node-version: 24
+          cache: npm
+
+      - name: Read version and check for an existing release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$version is already released -- nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            # A manual run still builds, so a change can be checked without cutting a release.
+            echo "build=$([ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$GITHUB_EVENT_NAME" = push ] || [ "$PUBLISH" = true ]; then
+              echo "release=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "release=false" >> "$GITHUB_OUTPUT"
+            fi
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.version.outputs.build == 'true'
+        run: npm ci
+
+      # vscode:prepublish (see package.json) runs check-types + lint + a production esbuild first.
+      - name: Package extension
+        if: steps.version.outputs.build == 'true'
+        run: npx vsce package
+
+      - uses: actions/upload-artifact@v4
+        if: steps.version.outputs.build == 'true'
+        with:
+          name: vscode-ggit-${{ steps.version.outputs.version }}
+          path: '*.vsix'
+          if-no-files-found: error
+
+      # `gh release create` creates the tag on --target when it doesn't exist yet, so this both tags
+      # the version-bump commit and publishes the release in one step. Release notes are generated
+      # from the commits since the previous release.
+      - name: Tag commit and create GitHub release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" ./*.vsix \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --generate-notes
+
+      # Opt-in Marketplace publish: only runs when a VSCE_PAT repository secret exists (an Azure DevOps
+      # personal access token with the "Marketplace > Manage" scope, for the publisher named in
+      # package.json). Without the secret this step just logs and exits 0, so the GitHub Release above
+      # is unaffected. Publishes the exact .vsix already built and attached, not a fresh build.
+      - name: Publish to VS Code Marketplace
+        if: steps.version.outputs.release == 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "VSCE_PAT secret not set -- skipping Marketplace publish."
+            exit 0
+          fi
+          npx vsce publish --packagePath ./*.vsix -p "$VSCE_PAT"
