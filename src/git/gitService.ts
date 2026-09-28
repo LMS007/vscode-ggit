@@ -902,6 +902,18 @@ function parseTodoSubject(todoLine: string | undefined): string | undefined {
 	return todoLine?.match(/^(?:pick|p)\s+\S+\s+(.*)$/)?.[1];
 }
 
+/** git's default stash subject is "WIP on <branch>: <sha> <subject>", or "On <branch>: <message>" when
+ * `git stash push -m` supplied one -- splits off the branch it was stashed from (never containing ":"
+ * -- git itself forbids that in a ref name, so this split is unambiguous) from the actual name/message
+ * that follows it. Falls back to the raw text as the name, with no branch, for anything that doesn't
+ * match either form (e.g. a stash created by some other tool). Shared by the Stashes tree view and
+ * the Apply Stash quick-pick so both present a stash the same way, rather than the quick-pick
+ * showing git's raw "WIP on/On ..." subject verbatim. */
+export function parseStashSubject(subject: string): { branch: string | undefined; name: string } {
+	const match = subject.match(/^(?:WIP on|On) ([^:]+):\s*(.*)$/);
+	return match ? { branch: match[1], name: match[2] } : { branch: undefined, name: subject };
+}
+
 /** Remote branch names always start with their own remote's name (e.g. "origin/main",
  * "upstream/alice/feature-x") -- splits off that leading segment. No "which remote" parameter
  * needed (and none should be assumed): with more than one remote configured, a caller hardcoding

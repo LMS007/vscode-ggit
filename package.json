@@ -356,52 +356,52 @@
       "view/item/context": [
         {
           "command": "ggit.stashSelectedFiles",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy",
           "group": "1_modification"
         },
         {
           "command": "ggit.openWorkingChangeFile",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy",
           "group": "inline"
         },
         {
           "command": "ggit.discardChanges",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy",
           "group": "2_discard"
         },
         {
           "submenu": "ggit.ignoreSubmenu",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy",
           "group": "3_gitignore"
         },
         {
           "command": "ggit.copyRelativePath",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy",
           "group": "4_copyPath@1"
         },
         {
           "command": "ggit.copyPath",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy",
           "group": "4_copyPath@2"
         },
         {
           "command": "ggit.revealInExplorerView",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy",
           "group": "5_reveal@1"
         },
         {
           "command": "ggit.revealInOS",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction' && isMac",
+          "when": "view == ggitWorkingCopy && isMac",
           "group": "5_reveal@2"
         },
         {
           "command": "ggit.revealInFileExplorer",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction' && isWindows",
+          "when": "view == ggitWorkingCopy && isWindows",
           "group": "5_reveal@2"
         },
         {
           "command": "ggit.openContainingFolder",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction' && isLinux",
+          "when": "view == ggitWorkingCopy && isLinux",
           "group": "5_reveal@2"
         },
         {

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GitService } from '../git/gitService';
+import { GitService, parseStashSubject } from '../git/gitService';
 import { StashInfo } from '../git/types';
 
 export class StashesTreeProvider implements vscode.TreeDataProvider<StashInfo> {
@@ -33,14 +33,4 @@ export class StashesTreeProvider implements vscode.TreeDataProvider<StashInfo> {
 		};
 		return item;
 	}
-}
-
-/** git's default stash subject is "WIP on <branch>: <sha> <subject>", or "On <branch>: <message>" when
- * `git stash push -m` supplied one -- splits off the branch it was stashed from (never containing ":"
- * -- git itself forbids that in a ref name, so this split is unambiguous) from the actual name/message
- * that follows it. Falls back to the raw text as the name, with no branch, for anything that doesn't
- * match either form (e.g. a stash created by some other tool). */
-function parseStashSubject(subject: string): { branch: string | undefined; name: string } {
-	const match = subject.match(/^(?:WIP on|On) ([^:]+):\s*(.*)$/);
-	return match ? { branch: match[1], name: match[2] } : { branch: undefined, name: subject };
 }

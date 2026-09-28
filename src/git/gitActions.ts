@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { GGIT_SHOW_SCHEME, INDEX_REF } from '../diff/showContentProvider';
-import { GitService, splitRemoteBranch } from './gitService';
+import { GitService, parseStashSubject, splitRemoteBranch } from './gitService';
 import { WorkingChangeFile } from './types';
 
 /** Picks a remote with no prompt at all: `preferredRemote` if given (the History tab's own remote
@@ -325,13 +325,20 @@ export async function applyStashWithPicker(gitService: GitService): Promise<void
 		return;
 	}
 
+	// Same "name" / "branch - date" split the Stashes tree view uses (see parseStashSubject) --
+	// label/description match its bright-label/dim-description look, rather than showing git's raw
+	// "WIP on <branch>: ..." subject here while the tree already shows the parsed, friendlier form.
 	const picked = await vscode.window.showQuickPick(
-		stashes.map(stash => ({
-			label: stash.message,
-			description: stash.ref,
-			detail: new Date(stash.date).toLocaleString(),
-			stash,
-		})),
+		stashes.map(stash => {
+			const { branch, name } = parseStashSubject(stash.message);
+			const date = new Date(stash.date).toLocaleDateString();
+			return {
+				label: name,
+				description: [branch, date].filter(Boolean).join(' - '),
+				detail: stash.ref,
+				stash,
+			};
+		}),
 		{ placeHolder: 'Select a stash to apply', ignoreFocusOut: true }
 	);
 	if (picked) {

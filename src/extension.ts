@@ -35,7 +35,7 @@ import { MAX_PINNED_BRANCH_COUNT, MIN_PINNED_BRANCH_COUNT, RecentBranches } from
 import { RemotesTreeProvider } from './tree/remotesTreeProvider';
 import { StashesTreeProvider } from './tree/stashesTreeProvider';
 import { WorkingChangeDecorationProvider } from './tree/workingChangeDecoration';
-import { isCreateCommitNode, isWorkingChangeFile, WorkingCopyTreeProvider } from './tree/workingCopyTreeProvider';
+import { isCreateCommitNode, isWorkingChangeFile, WorkingCopyNode, WorkingCopyTreeProvider } from './tree/workingCopyTreeProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
 	const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -386,11 +386,13 @@ export function activate(context: vscode.ExtensionContext): void {
 		// (right-clicking a row outside the selection) it's undefined and we just act on that one row.
 		vscode.commands.registerCommand(
 			'ggit.stashSelectedFiles',
-			(file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
-				// selectedFiles can include the pinned Create Commit row when it's part of a multi-select
-				// that also includes the right-clicked file — filtered out since it isn't a real file.
-				const files =
-					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
+			(file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+				const files = resolveWorkingChangeSelection(file, selectedFiles);
+				if (files.length === 0) {
+					// Nothing real in play -- e.g. the pinned Create Commit row was the only thing
+					// clicked (or selected). See resolveWorkingChangeSelection.
+					return;
+				}
 				return runGitOperation(
 					`Stashing ${files.length} file${files.length === 1 ? '' : 's'}…`,
 					() => stashPathsWithMessage(gitService, files.map(f => f.path)),
@@ -399,7 +401,11 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		),
 
-		vscode.commands.registerCommand('ggit.openWorkingChangeFile', async (file: WorkingChangeFile) => {
+		vscode.commands.registerCommand('ggit.openWorkingChangeFile', async (file: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(file)) {
+				// The pinned Create Commit row -- its own row command opens the Commit panel, not this.
+				return;
+			}
 			try {
 				const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 				await vscode.commands.executeCommand('vscode.open', uri);
@@ -410,9 +416,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand(
 			'ggit.discardChanges',
-			(file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
-				const files =
-					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
+			(file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+				const files = resolveWorkingChangeSelection(file, selectedFiles);
+				if (files.length === 0) {
+					return;
+				}
 				return runGitOperation(
 					`Discarding ${files.length} file${files.length === 1 ? '' : 's'}…`,
 					() => discardWorkingChanges(gitService, files),
@@ -426,9 +434,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		// the extension (a "*.ext" pattern, also unanchored).
 		vscode.commands.registerCommand(
 			'ggit.ignoreThisItem',
-			async (file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
-				const files =
-					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
+			async (file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+				const files = resolveWorkingChangeSelection(file, selectedFiles);
+				if (files.length === 0) {
+					return;
+				}
 				try {
 					await addPathsToGitignore(gitService, files.map(f => f.path));
 					refreshAll();
@@ -440,9 +450,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand(
 			'ggit.ignoreByName',
-			async (file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
-				const files =
-					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
+			async (file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+				const files = resolveWorkingChangeSelection(file, selectedFiles);
+				if (files.length === 0) {
+					return;
+				}
 				try {
 					await addPathsToGitignore(gitService, files.map(f => path.basename(f.path)));
 					refreshAll();
@@ -454,9 +466,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand(
 			'ggit.ignoreByType',
-			async (file: WorkingChangeFile, selectedFiles?: WorkingChangeFile[]) => {
-				const files =
-					selectedFiles && selectedFiles.length > 0 ? selectedFiles.filter(isWorkingChangeFile) : [file];
+			async (file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+				const files = resolveWorkingChangeSelection(file, selectedFiles);
+				if (files.length === 0) {
+					return;
+				}
 				const patterns = new Set<string>();
 				let anyWithoutExtension = false;
 				for (const f of files) {
@@ -490,15 +504,24 @@ export function activate(context: vscode.ExtensionContext): void {
 		// Relative to the repo root (== this extension's one workspace folder, see the top of
 		// activate()) with OS-native separators -- file.path itself is always "/"-separated (that's
 		// what git prints), which would be a lie to paste into a Windows path field as-is.
-		vscode.commands.registerCommand('ggit.copyRelativePath', (file: WorkingChangeFile) => {
+		vscode.commands.registerCommand('ggit.copyRelativePath', (file: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(file)) {
+				return;
+			}
 			void vscode.env.clipboard.writeText(file.path.split('/').join(path.sep));
 		}),
 
-		vscode.commands.registerCommand('ggit.copyPath', (file: WorkingChangeFile) => {
+		vscode.commands.registerCommand('ggit.copyPath', (file: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(file)) {
+				return;
+			}
 			void vscode.env.clipboard.writeText(path.join(gitService.repoRoot, file.path));
 		}),
 
-		vscode.commands.registerCommand('ggit.revealInExplorerView', (file: WorkingChangeFile) => {
+		vscode.commands.registerCommand('ggit.revealInExplorerView', (file: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(file)) {
+				return;
+			}
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 			void vscode.commands.executeCommand('revealInExplorer', uri);
 		}),
@@ -507,17 +530,26 @@ export function activate(context: vscode.ExtensionContext): void {
 		// Explorer uses ("Reveal in Finder" / "Reveal in File Explorer" / "Open Containing Folder") --
 		// package.json menu titles are static, so the isMac/isWindows/isLinux `when` clauses on these
 		// three (see package.json) are what actually pick the one that shows up on a given OS.
-		vscode.commands.registerCommand('ggit.revealInOS', (file: WorkingChangeFile) => {
+		vscode.commands.registerCommand('ggit.revealInOS', (file: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(file)) {
+				return;
+			}
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 			void vscode.commands.executeCommand('revealFileInOS', uri);
 		}),
 
-		vscode.commands.registerCommand('ggit.revealInFileExplorer', (file: WorkingChangeFile) => {
+		vscode.commands.registerCommand('ggit.revealInFileExplorer', (file: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(file)) {
+				return;
+			}
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 			void vscode.commands.executeCommand('revealFileInOS', uri);
 		}),
 
-		vscode.commands.registerCommand('ggit.openContainingFolder', (file: WorkingChangeFile) => {
+		vscode.commands.registerCommand('ggit.openContainingFolder', (file: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(file)) {
+				return;
+			}
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 			void vscode.commands.executeCommand('revealFileInOS', uri);
 		}),
@@ -692,6 +724,19 @@ export function activate(context: vscode.ExtensionContext): void {
 	workingTreeWatcher.onDidCreate(onWorkingTreeChange);
 	workingTreeWatcher.onDidDelete(onWorkingTreeChange);
 	context.subscriptions.push(workingTreeWatcher);
+}
+
+/** Normalizes a Working Copy context-menu invocation into just the real files, dropping the pinned
+ * Create Commit row if it's part of the selection -- or the sole target, if it was clicked alone.
+ * VS Code's own `viewItem` `when`-clause matching applies to every item in an active multi-select,
+ * not just the one actually right-clicked (verified: a selection spanning the Create Commit row
+ * together with real files hid every context-menu item package.json's `when` clauses gated on
+ * `viewItem != 'createCommitAction'`, not just the ones the create-commit row itself doesn't apply
+ * to) -- so that exclusion had to move here instead, applied uniformly regardless of whether this
+ * command was invoked with a single target or a broader selection. */
+function resolveWorkingChangeSelection(file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]): WorkingChangeFile[] {
+	const nodes = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
+	return nodes.filter(isWorkingChangeFile);
 }
 
 /** Tree items don't have a native double-click event, so we detect one ourselves: two clicks on the
