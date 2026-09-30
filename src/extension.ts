@@ -708,17 +708,33 @@ export function activate(context: vscode.ExtensionContext): void {
 	// `files.watcherExclude`'s defaults (.git/objects/**, etc.) plus whatever a repo/user already
 	// excludes (node_modules, build output, ...) apply here the same as for any other extension's
 	// recursive watcher, and this only ever triggers the cheap `git status`-based refresh above, never
-	// the full branches/remotes/stashes refreshAll.
+	// the full branches/remotes/stashes refreshAll. files.watcherExclude doesn't cover .gitignore,
+	// though -- a test run streaming into an ignored logs/ dir fired this on every write and kept a
+	// `git status` going nonstop -- so each debounced batch is checked against .gitignore first and
+	// dropped if nothing in it could actually show up in Working Copy.
 	const workingTreeWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceFolder, '**/*'));
 	let workingTreeDebounce: ReturnType<typeof setTimeout> | undefined;
+	const pendingWorkingTreeChanges = new Set<string>();
+	const flushWorkingTreeChanges = async () => {
+		const changed = [...pendingWorkingTreeChanges];
+		pendingWorkingTreeChanges.clear();
+		// Logged once per batch rather than per event -- still proves the watcher is alive (see
+		// onGitDirChange above), without flooding the channel during exactly the storms this is for.
+		const summary = `${changed[0]}${changed.length > 1 ? ` (+${changed.length - 1} more)` : ''}`;
+		if (await gitService.allIgnored(changed)) {
+			output.appendLine(`workingTreeWatcher: skipped, all gitignored: ${summary}`);
+			return;
+		}
+		refreshWorkingCopy(`external change: ${summary}`);
+	};
 	const onWorkingTreeChange = (uri: vscode.Uri) => {
 		if (uri.fsPath.includes(`${path.sep}.git${path.sep}`) || uri.fsPath.endsWith(`${path.sep}.git`)) {
 			// Already covered by gitDirWatcher above -- skip to avoid double-refreshing on every commit/checkout.
 			return;
 		}
-		output.appendLine(`workingTreeWatcher fired: ${uri.fsPath}`);
+		pendingWorkingTreeChanges.add(uri.fsPath);
 		clearTimeout(workingTreeDebounce);
-		workingTreeDebounce = setTimeout(() => refreshWorkingCopy(`external change: ${uri.fsPath}`), 500);
+		workingTreeDebounce = setTimeout(() => void flushWorkingTreeChanges(), 500);
 	};
 	workingTreeWatcher.onDidChange(onWorkingTreeChange);
 	workingTreeWatcher.onDidCreate(onWorkingTreeChange);

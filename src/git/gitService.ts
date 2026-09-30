@@ -28,7 +28,20 @@ export class GitService {
 		// simple-git blocks `-c core.editor=...` by default as a potential command-injection vector —
 		// reasonable when that value could come from user input, but ours is always the hardcoded
 		// literal "true" (see rebaseOnto/rebaseContinue/rebaseSkip below), never anything external.
-		this.git = simpleGit({ baseDir: repoRoot, unsafe: { allowUnsafeEditor: true } });
+		// --no-optional-locks stops `git status` from opportunistically taking .git/index.lock to write
+		// back its refreshed stat cache -- which it holds for the *whole* status run, untracked scan
+		// included. On a big repo under load that's tens of seconds, and an extension host killed in
+		// that window (e.g. a Remote-SSH laptop sleeping) leaves an orphaned 0-byte index.lock that
+		// blocks every later commit/checkout until it's deleted by hand. Only *optional* locks are
+		// skipped, so writes (add, commit, checkout, ...) still lock exactly as before. It goes in as a
+		// binary prefix (spawning `git --no-optional-locks <args>`) rather than GIT_OPTIONAL_LOCKS=0 via
+		// .env(), because a custom env must then carry all of process.env, and simple-git refuses to
+		// run anything at all when that includes EDITOR/PAGER/GIT_ASKPASS -- which most login shells set.
+		this.git = simpleGit({
+			baseDir: repoRoot,
+			binary: ['git', '--no-optional-locks'],
+			unsafe: { allowUnsafeEditor: true },
+		});
 	}
 
 	/** Lets other classes holding a GitService reference (tree providers, panels) write to the same
@@ -602,6 +615,38 @@ export class GitService {
 		}
 		args.push('--', ...relPaths);
 		await this.git.raw(args);
+	}
+
+	/** Whether every one of these absolute paths is gitignored (and untracked) -- i.e. a change to
+	 * them can't possibly show up in `git status`. VS Code's file watchers honor files.watcherExclude
+	 * but not .gitignore, so a build or test run streaming into an ignored logs/ or out/ dir inside the
+	 * worktree otherwise looks exactly like real edits. Fails open (false) on anything unexpected --
+	 * a path outside the repo, git erroring -- since a needless refresh beats a stale Working Copy. */
+	async allIgnored(absPaths: string[]): Promise<boolean> {
+		const relPaths: string[] = [];
+		for (const absPath of absPaths) {
+			const rel = path.relative(this.repoRoot, absPath);
+			if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+				return false;
+			}
+			relPaths.push(rel);
+		}
+		try {
+			// Chunked only to stay well under the OS argv limit when a build touches thousands of files.
+			// git prints one line per ignored path (quoting any with odd characters, newlines included),
+			// and exits 1 with no output when none are -- which simple-git treats as success.
+			for (let i = 0; i < relPaths.length; i += 500) {
+				const chunk = relPaths.slice(i, i + 500);
+				const out = await this.git.raw(['check-ignore', '--', ...chunk]);
+				if (out.split('\n').filter(Boolean).length < chunk.length) {
+					return false;
+				}
+			}
+			return true;
+		} catch (err) {
+			this.logger?.(`allIgnored: check-ignore failed, treating as not ignored: ${err}`);
+			return false;
+		}
 	}
 
 	/** Combined staged + unstaged working-tree changes. Usually one entry per file, but a file with
