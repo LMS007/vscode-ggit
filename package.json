@@ -356,52 +356,52 @@
       "view/item/context": [
         {
           "command": "ggit.stashSelectedFiles",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "1_modification"
         },
         {
           "command": "ggit.openWorkingChangeFile",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
           "group": "inline"
         },
         {
           "command": "ggit.discardChanges",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "2_discard"
         },
         {
           "submenu": "ggit.ignoreSubmenu",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "3_gitignore"
         },
         {
           "command": "ggit.copyRelativePath",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "4_copyPath@1"
         },
         {
           "command": "ggit.copyPath",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "4_copyPath@2"
         },
         {
           "command": "ggit.revealInExplorerView",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "5_reveal@1"
         },
         {
           "command": "ggit.revealInOS",
-          "when": "view == ggitWorkingCopy && isMac",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isMac",
           "group": "5_reveal@2"
         },
         {
           "command": "ggit.revealInFileExplorer",
-          "when": "view == ggitWorkingCopy && isWindows",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isWindows",
           "group": "5_reveal@2"
         },
         {
           "command": "ggit.openContainingFolder",
-          "when": "view == ggitWorkingCopy && isLinux",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isLinux",
           "group": "5_reveal@2"
         },
         {

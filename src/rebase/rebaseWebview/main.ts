@@ -12,7 +12,7 @@ const abortButton = document.getElementById('abortButton') as HTMLButtonElement;
 const stagedTextEl = document.getElementById('stagedText')!;
 const errorEl = document.getElementById('error')!;
 const filesEl = document.getElementById('files')!;
-
+//test
 function escapeHtml(text: string): string {
 	return text
 		.replace(/&/g, '&amp;')
