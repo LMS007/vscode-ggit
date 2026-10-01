@@ -74,6 +74,15 @@ export function activate(context: vscode.ExtensionContext): void {
 		treeDataProvider: workingCopyProvider,
 		canSelectMany: true,
 	});
+	// VS Code only shows a context-menu item when its `when` clause holds for *every* row in the
+	// right-clicked selection, so gating Working Copy's items on `viewItem != 'createCommitAction'`
+	// alone would hide the whole menu the moment Create Commit is part of a select-all. This key lets
+	// package.json exempt that row only while it's selected alongside real files -- right-clicked on
+	// its own it still gets no menu, and the handlers drop it (see resolveWorkingChangeSelection).
+	workingCopyView.onDidChangeSelection(e => {
+		const mixed = e.selection.some(isCreateCommitNode) && e.selection.some(isWorkingChangeFile);
+		void vscode.commands.executeCommand('setContext', 'ggit.workingCopyMixedSelection', mixed);
+	});
 
 	const branchesView = vscode.window.createTreeView('ggitBranches', {
 		treeDataProvider: branchesProvider,
@@ -589,22 +598,25 @@ export function activate(context: vscode.ExtensionContext): void {
 		// Relative to the repo root (== this extension's one workspace folder, see the top of
 		// activate()) with OS-native separators -- file.path itself is always "/"-separated (that's
 		// what git prints), which would be a lie to paste into a Windows path field as-is.
-		vscode.commands.registerCommand('ggit.copyRelativePath', (file: WorkingCopyNode) => {
-			if (!isWorkingChangeFile(file)) {
+		vscode.commands.registerCommand('ggit.copyRelativePath', (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+			const file = resolveSingleWorkingChangeFile(node, selectedFiles);
+			if (!file) {
 				return;
 			}
 			void vscode.env.clipboard.writeText(file.path.split('/').join(path.sep));
 		}),
 
-		vscode.commands.registerCommand('ggit.copyPath', (file: WorkingCopyNode) => {
-			if (!isWorkingChangeFile(file)) {
+		vscode.commands.registerCommand('ggit.copyPath', (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+			const file = resolveSingleWorkingChangeFile(node, selectedFiles);
+			if (!file) {
 				return;
 			}
 			void vscode.env.clipboard.writeText(path.join(gitService.repoRoot, file.path));
 		}),
 
-		vscode.commands.registerCommand('ggit.revealInExplorerView', (file: WorkingCopyNode) => {
-			if (!isWorkingChangeFile(file)) {
+		vscode.commands.registerCommand('ggit.revealInExplorerView', (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+			const file = resolveSingleWorkingChangeFile(node, selectedFiles);
+			if (!file) {
 				return;
 			}
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
@@ -615,24 +627,27 @@ export function activate(context: vscode.ExtensionContext): void {
 		// Explorer uses ("Reveal in Finder" / "Reveal in File Explorer" / "Open Containing Folder") --
 		// package.json menu titles are static, so the isMac/isWindows/isLinux `when` clauses on these
 		// three (see package.json) are what actually pick the one that shows up on a given OS.
-		vscode.commands.registerCommand('ggit.revealInOS', (file: WorkingCopyNode) => {
-			if (!isWorkingChangeFile(file)) {
+		vscode.commands.registerCommand('ggit.revealInOS', (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+			const file = resolveSingleWorkingChangeFile(node, selectedFiles);
+			if (!file) {
 				return;
 			}
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 			void vscode.commands.executeCommand('revealFileInOS', uri);
 		}),
 
-		vscode.commands.registerCommand('ggit.revealInFileExplorer', (file: WorkingCopyNode) => {
-			if (!isWorkingChangeFile(file)) {
+		vscode.commands.registerCommand('ggit.revealInFileExplorer', (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+			const file = resolveSingleWorkingChangeFile(node, selectedFiles);
+			if (!file) {
 				return;
 			}
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 			void vscode.commands.executeCommand('revealFileInOS', uri);
 		}),
 
-		vscode.commands.registerCommand('ggit.openContainingFolder', (file: WorkingCopyNode) => {
-			if (!isWorkingChangeFile(file)) {
+		vscode.commands.registerCommand('ggit.openContainingFolder', (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+			const file = resolveSingleWorkingChangeFile(node, selectedFiles);
+			if (!file) {
 				return;
 			}
 			const uri = vscode.Uri.file(path.join(gitService.repoRoot, file.path));
@@ -829,16 +844,23 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 /** Normalizes a Working Copy context-menu invocation into just the real files, dropping the pinned
- * Create Commit row if it's part of the selection -- or the sole target, if it was clicked alone.
- * VS Code's own `viewItem` `when`-clause matching applies to every item in an active multi-select,
- * not just the one actually right-clicked (verified: a selection spanning the Create Commit row
- * together with real files hid every context-menu item package.json's `when` clauses gated on
- * `viewItem != 'createCommitAction'`, not just the ones the create-commit row itself doesn't apply
- * to) -- so that exclusion had to move here instead, applied uniformly regardless of whether this
- * command was invoked with a single target or a broader selection. */
+ * Create Commit row if it's part of the selection. package.json only offers the menu on that row
+ * while it's selected alongside real files (see ggit.workingCopyMixedSelection in activate()) --
+ * VS Code's `when`-clause matching applies to every item in the selection, so the menu can't be
+ * hidden for that one row without hiding it for a select-all too -- which leaves dropping it here. */
 function resolveWorkingChangeSelection(file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]): WorkingChangeFile[] {
 	const nodes = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
 	return nodes.filter(isWorkingChangeFile);
+}
+
+/** For the single-target commands (Copy Path, Reveal): the right-clicked file itself, or -- when the
+ * row right-clicked was Create Commit as part of a larger selection, e.g. a select-all -- the first
+ * real file in that selection instead. */
+function resolveSingleWorkingChangeFile(
+	file: WorkingCopyNode,
+	selectedFiles?: WorkingCopyNode[]
+): WorkingChangeFile | undefined {
+	return isWorkingChangeFile(file) ? file : resolveWorkingChangeSelection(file, selectedFiles)[0];
 }
 
 /** Tree items don't have a native double-click event, so we detect one ourselves: two clicks on the
