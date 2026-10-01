@@ -517,13 +517,19 @@ export class BranchHistoryPanel {
 			outline: 1px solid var(--vscode-focusBorder);
 			outline-offset: -1px;
 		}
+		/* The Commit button -- the same badge blue as the selected commit row (see .row.selected), so the
+		 * tab's main action and its current selection read as one accent color rather than two slightly
+		 * different blues side by side. */
 		.toolbar-btn-primary {
 			border-color: transparent;
-			background-color: var(--vscode-button-background);
-			color: var(--vscode-button-foreground);
+			background-color: var(--vscode-badge-background, #3b82f6);
+			color: var(--vscode-badge-foreground, #ffffff);
 		}
 		.toolbar-btn-primary:hover:not(:disabled) {
-			background-color: var(--vscode-button-hoverBackground);
+			/* The badge color has no hover variant, so this keeps the fill and brightens the border --
+			 * the same hover treatment as .toolbar-btn-success:hover below. */
+			background-color: var(--vscode-badge-background, #3b82f6);
+			border-color: rgba(255, 255, 255, 0.6);
 		}
 		.toolbar-btn-primary:disabled {
 			opacity: 0.5;
