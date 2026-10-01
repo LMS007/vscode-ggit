@@ -38,7 +38,7 @@
         {
           "id": "ggitConflicts",
           "name": "Conflicts",
-          "when": "ggit.rebaseInProgress",
+          "when": "ggit.rebaseInProgress || ggit.mergeInProgress",
           "initialSize": 2
         },
         {
@@ -123,6 +123,16 @@
       {
         "command": "ggit.rebaseAbort",
         "title": "GGit: Abort Rebase",
+        "icon": "$(circle-slash)"
+      },
+      {
+        "command": "ggit.mergeCommit",
+        "title": "GGit: Commit Merge",
+        "icon": "$(check)"
+      },
+      {
+        "command": "ggit.mergeAbort",
+        "title": "GGit: Abort Merge",
         "icon": "$(circle-slash)"
       },
       {
@@ -334,7 +344,12 @@
         },
         {
           "command": "ggit.rebaseAbort",
-          "when": "view == ggitConflicts",
+          "when": "view == ggitConflicts && ggit.rebaseInProgress",
+          "group": "navigation@0"
+        },
+        {
+          "command": "ggit.mergeAbort",
+          "when": "view == ggitConflicts && ggit.mergeInProgress",
           "group": "navigation@0"
         },
         {

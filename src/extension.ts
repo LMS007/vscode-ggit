@@ -6,7 +6,9 @@ import { CommitPanel } from './commit/commitPanel';
 import { BranchHistoryPanel } from './history/branchHistoryPanel';
 import { CommitFilesPanel } from './history/commitFilesPanel';
 import { AddRemotePanel } from './remote/addRemotePanel';
-import { RebaseConflictsPanel } from './rebase/rebaseConflictsPanel';
+import { ConflictOperation } from './conflicts/conflictsProtocol';
+import { ConflictsPanel } from './conflicts/conflictsPanel';
+import { MergePanel } from './merge/mergePanel';
 import { openDiffForWorkingChange } from './diff/openDiff';
 import { GGitShowContentProvider, GGIT_SHOW_SCHEME } from './diff/showContentProvider';
 import {
@@ -29,6 +31,7 @@ import { GitService } from './git/gitService';
 import { BranchInfo, StashInfo, WorkingChangeFile } from './git/types';
 import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
+import { BranchesDragAndDropController } from './tree/branchesDragAndDrop';
 import { BranchesTreeProvider } from './tree/branchesTreeProvider';
 import { ConflictsTreeProvider } from './tree/conflictsTreeProvider';
 import { MAX_PINNED_BRANCH_COUNT, MIN_PINNED_BRANCH_COUNT, RecentBranches } from './tree/recentBranches';
@@ -72,7 +75,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		canSelectMany: true,
 	});
 
-	const branchesView = vscode.window.createTreeView('ggitBranches', { treeDataProvider: branchesProvider });
+	const branchesView = vscode.window.createTreeView('ggitBranches', {
+		treeDataProvider: branchesProvider,
+		// startMerge is defined further down -- only ever called from a drop, well after activate() is done.
+		dragAndDropController: new BranchesDragAndDropController((sourceBranch, intoBranch) => void startMerge(sourceBranch, intoBranch)),
+	});
 	// The workspace folder name, mirroring how Working Copy's description shows the active branch —
 	// static for now since GGit only ever looks at a single workspace folder (see the worktree
 	// discussion: there's no "switch worktree" yet, so this never needs to change mid-session).
@@ -121,21 +128,29 @@ export function activate(context: vscode.ExtensionContext): void {
 		}
 	};
 
-	// The Conflicts view only shows at all while a rebase is in progress (see its `when` clause in
-	// package.json) — this is what flips that on/off, checked on every refresh so entering/leaving a
-	// conflicted rebase state (via GGit's own actions or the integrated terminal) is picked up promptly.
-	// Also what auto-opens the Rebase tab the moment a rebase starts (including one already in progress
-	// when VS Code itself starts up, since this runs once at activation too, below) -- wasRebaseInProgress
-	// starts false, so only a genuine false-to-true transition opens it, not every refresh while it's
-	// already open.
-	let wasRebaseInProgress = false;
-	const updateRebaseContext = async () => {
-		const inProgress = await gitService.isRebaseInProgress();
-		void vscode.commands.executeCommand('setContext', 'ggit.rebaseInProgress', inProgress);
-		if (inProgress && !wasRebaseInProgress) {
-			RebaseConflictsPanel.createOrShow(context, gitService, refreshAll);
+	// The Conflicts view only shows at all while a rebase or merge is stopped (see its `when` clause in
+	// package.json) — this is what flips that on/off, checked on every refresh so entering/leaving that
+	// state (via GGit's own actions or the integrated terminal) is picked up promptly. Also what
+	// auto-opens the Conflicts tab the moment either one stops (including one already stopped when VS
+	// Code itself starts up, since this runs once at activation too, below) -- activeConflictOperation
+	// starts undefined, so only a genuine none-to-something transition opens it, not every refresh
+	// while it's already open.
+	let activeConflictOperation: ConflictOperation | undefined;
+	const updateConflictContext = async () => {
+		const [rebasing, merging] = await Promise.all([gitService.isRebaseInProgress(), gitService.isMergeInProgress()]);
+		void vscode.commands.executeCommand('setContext', 'ggit.rebaseInProgress', rebasing);
+		void vscode.commands.executeCommand('setContext', 'ggit.mergeInProgress', merging);
+		const operation: ConflictOperation | undefined = rebasing ? 'rebase' : merging ? 'merge' : undefined;
+		if (operation && operation !== activeConflictOperation) {
+			// refreshAll's own conflictsProvider.refresh() already ran before this resolved, with the
+			// old wording -- so refresh again now that it knows which operation this is.
+			conflictsProvider.setOperation(operation);
+			conflictsProvider.refresh();
+			if (!activeConflictOperation) {
+				ConflictsPanel.createOrShow(context, gitService, refreshAll);
+			}
 		}
-		wasRebaseInProgress = inProgress;
+		activeConflictOperation = operation;
 	};
 
 	const refreshAll = () => {
@@ -148,11 +163,65 @@ export function activate(context: vscode.ExtensionContext): void {
 		workingChangeDecorations.refresh();
 		showContentProvider.refresh();
 		void updateWorkingCopyBadge();
-		void updateRebaseContext();
+		void updateConflictContext();
 		void updateActiveBranchLabel();
 		CommitPanel.refreshIfOpen();
 		void commitLauncherProvider.refresh();
-		RebaseConflictsPanel.refreshIfOpen();
+		ConflictsPanel.refreshIfOpen();
+	};
+
+	// A local branch dropped onto the HEAD branch (see BranchesDragAndDropController). Everything is
+	// re-checked against live git state -- the drop only knows what the tree looked like when it last
+	// rendered. A pure fast-forward gets a plain confirmation, since there's nothing to decide beyond
+	// "yes" (its Options button still reaches the full dialog, for --no-ff or a squash); anything that
+	// needs a real merge commit goes straight to the Merge dialog. If the merge then stops -- on
+	// conflicts, or --no-commit -- updateConflictContext opens the Conflicts tab from the refresh.
+	const startMerge = async (sourceBranch: string, intoBranch: string) => {
+		try {
+			if ((await gitService.getCurrentBranch()) !== intoBranch) {
+				// The row dropped on was HEAD when it last rendered but isn't any more -- the same no-op
+				// as a drop on any other branch.
+				return;
+			}
+			if (await gitService.isRebaseInProgress()) {
+				void vscode.window.showWarningMessage('GGit: Finish or abort the rebase in progress before merging.');
+				return;
+			}
+			if (await gitService.isMergeInProgress()) {
+				void vscode.window.showWarningMessage('GGit: Finish or abort the merge in progress before starting another.');
+				return;
+			}
+			const analysis = await gitService.analyzeMerge(sourceBranch);
+			if (analysis.incoming === 0) {
+				void vscode.window.showInformationMessage(`GGit: ${intoBranch} already has everything on ${sourceBranch} -- nothing to merge.`);
+				return;
+			}
+			const onMerged = () => {
+				refreshAll();
+				BranchHistoryPanel.refreshIfOpen();
+			};
+			if (analysis.outgoing > 0) {
+				MergePanel.createOrShow(context, gitService, sourceBranch, intoBranch, analysis, onMerged);
+				return;
+			}
+			const commits = `${analysis.incoming} commit${analysis.incoming === 1 ? '' : 's'}`;
+			const choice = await vscode.window.showInformationMessage(
+				`Merge "${sourceBranch}" into "${intoBranch}"?`,
+				{
+					modal: true,
+					detail: `This is a fast-forward: ${intoBranch} moves ahead ${commits} to match ${sourceBranch}, with no merge commit.`,
+				},
+				'Merge',
+				'Merge Options…'
+			);
+			if (choice === 'Merge') {
+				await runGitOperation(`Merging ${sourceBranch} into ${intoBranch}…`, () => gitService.fastForwardTo(sourceBranch), refreshAll);
+			} else if (choice === 'Merge Options…') {
+				MergePanel.createOrShow(context, gitService, sourceBranch, intoBranch, analysis, onMerged);
+			}
+		} catch (err) {
+			vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+		}
 	};
 
 	const isLocalBranchDoubleClick = createDoubleClickGuard();
@@ -188,7 +257,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	});
 
 	void updateWorkingCopyBadge();
-	void updateRebaseContext();
+	void updateConflictContext();
 	void updateActiveBranchLabel();
 
 	context.subscriptions.push(
@@ -314,10 +383,26 @@ export function activate(context: vscode.ExtensionContext): void {
 			return runGitOperation('Aborting rebase…', () => gitService.rebaseAbort(), refreshAll);
 		}),
 
-		// The sidebar Conflicts view's only row -- opens (or refocuses) the Rebase tab, where resolving
-		// actually happens. See conflictsTreeProvider.ts and rebaseConflictsPanel.ts.
-		vscode.commands.registerCommand('ggit.openRebaseTab', () => {
-			RebaseConflictsPanel.createOrShow(context, gitService, refreshAll);
+		vscode.commands.registerCommand('ggit.mergeCommit', () =>
+			runGitOperation('Committing merge…', () => gitService.mergeCommit(), refreshAll)
+		),
+
+		vscode.commands.registerCommand('ggit.mergeAbort', async () => {
+			const confirmed = await vscode.window.showWarningMessage(
+				'Abort the merge in progress? This throws away the merge, including any conflicts already resolved, and restores the branch (and any uncommitted changes) to their state before it started.',
+				{ modal: true },
+				'Abort Merge'
+			);
+			if (confirmed !== 'Abort Merge') {
+				return;
+			}
+			return runGitOperation('Aborting merge…', () => gitService.mergeAbort(), refreshAll);
+		}),
+
+		// The sidebar Conflicts view's only row -- opens (or refocuses) the Conflicts tab, where resolving
+		// actually happens. See conflictsTreeProvider.ts and conflictsPanel.ts.
+		vscode.commands.registerCommand('ggit.openConflictsTab', () => {
+			ConflictsPanel.createOrShow(context, gitService, refreshAll);
 		}),
 
 		vscode.commands.registerCommand('ggit.openWorkingChangeDiff', async (file: WorkingChangeFile) => {
@@ -640,6 +725,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			// in-progress rebase (conflicted or not) — watching them is what lets the Conflicts view
 			// and its `ggit.rebaseInProgress` context key react promptly to a rebase starting, pausing
 			// on a conflict, or finishing/aborting, including one driven from the integrated terminal.
+			// MERGE_HEAD does the same for a stopped merge (`ggit.mergeInProgress`).
 			// worktrees/** is git's per-linked-worktree admin dir — a subdirectory appears/disappears
 			// on `git worktree add`/`remove`, and each one's own HEAD file changes when that worktree
 			// switches branches, which is exactly the state Branches' blue/"checked out elsewhere"
@@ -648,7 +734,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			// shared git dir, not a per-worktree pointer file. If GGit ever opens from inside a linked
 			// worktree instead, this would need to watch the resolved git-common-dir rather than a
 			// hardcoded ".git" under the workspace folder.
-			'{HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}'
+			'{HEAD,MERGE_HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}'
 		)
 	);
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;

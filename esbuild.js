@@ -138,11 +138,11 @@ async function main() {
 		],
 	});
 
-	// The rebase-conflicts tab is a sixth, independent webview (a paused-commit file checklist, no
-	// commit browser), so it gets its own bundle rather than sharing another panel's.
-	const rebaseWebviewCtx = await esbuild.context({
+	// The conflicts tab is a sixth, independent webview (a stopped rebase's or merge's file checklist,
+	// no commit browser), so it gets its own bundle rather than sharing another panel's.
+	const conflictsWebviewCtx = await esbuild.context({
 		entryPoints: [
-			'src/rebase/rebaseWebview/main.ts'
+			'src/conflicts/conflictsWebview/main.ts'
 		],
 		bundle: true,
 		format: 'iife',
@@ -150,7 +150,26 @@ async function main() {
 		sourcemap: !production,
 		sourcesContent: false,
 		platform: 'browser',
-		outfile: 'dist/rebaseWebview.js',
+		outfile: 'dist/conflictsWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
+	// The merge dialog is a seventh, independent webview (a simple form, like create-branch), so it
+	// gets its own bundle rather than sharing another panel's.
+	const mergeWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/merge/mergeWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/mergeWebview.js',
 		logLevel: 'silent',
 		plugins: [
 			esbuildProblemMatcherPlugin,
@@ -164,7 +183,8 @@ async function main() {
 		createBranchWebviewCtx,
 		commitWebviewCtx,
 		addRemoteWebviewCtx,
-		rebaseWebviewCtx,
+		conflictsWebviewCtx,
+		mergeWebviewCtx,
 	];
 
 	if (watch) {
