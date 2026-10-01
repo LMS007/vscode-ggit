@@ -79,6 +79,39 @@ export interface RebaseProgress {
 	branchName: string | undefined;
 }
 
+/** An in-progress (stopped) merge -- see GitService.getMergeProgress. */
+export interface MergeProgress {
+	/** The branch being merged in, parsed from git's own "Merge branch '...'" message -- falls back to
+	 * MERGE_HEAD's short hash for anything that message doesn't name (e.g. merging a bare commit). */
+	branchName: string | undefined;
+	/** The branch receiving the merge (HEAD stays attached for the whole span of a merge, unlike a
+	 * rebase, so this is just the current branch). */
+	intoBranch: string | undefined;
+}
+
+/** What merging `branch` into HEAD would do, worked out before anything is touched -- see
+ * GitService.analyzeMerge. */
+export interface MergeAnalysis {
+	/** Commits on the branch that HEAD doesn't have yet -- 0 means there's nothing to merge. */
+	incoming: number;
+	/** Commits on HEAD that the branch doesn't have -- 0 (with incoming > 0) means a fast-forward. */
+	outgoing: number;
+	/** Files a real merge would leave conflicted, predicted with `git merge-tree` -- always empty for a
+	 * fast-forward, which can't conflict. */
+	conflicts: string[];
+}
+
+/** The Merge dialog's choices, mapped onto `git merge` flags in GitService.mergeBranch. */
+export interface MergeOptions {
+	/** `--squash`: the branch's changes land as one ordinary (non-merge) commit. */
+	squash: boolean;
+	/** `--no-ff`: create a merge commit even when a fast-forward would do. */
+	noFastForward: boolean;
+	/** false means `--no-commit` (or, for a squash, stopping before the commit) -- the result is left
+	 * staged for review instead. */
+	commit: boolean;
+}
+
 export interface StashInfo {
 	/** "stash@{0}" — the reflog-style ref git's own stash commands expect. */
 	ref: string;

@@ -8,6 +8,9 @@ import {
 	CommitInfo,
 	ConflictedFile,
 	FileStatus,
+	MergeAnalysis,
+	MergeOptions,
+	MergeProgress,
 	RebaseProgress,
 	RefBadge,
 	RemoteBranchInfo,
@@ -800,6 +803,120 @@ export class GitService {
 		await this.git.raw(['rebase', '--abort']);
 	}
 
+	/** git writes MERGE_HEAD the moment a merge stops short of committing -- on conflicts, or because
+	 * --no-commit asked it to -- and removes it once that merge is committed or aborted. It's what
+	 * `git status` checks to print "You have unmerged paths" / "All conflicts fixed but you are still
+	 * merging". A --squash merge never writes one (see mergeBranch). */
+	async isMergeInProgress(): Promise<boolean> {
+		const gitDir = await this.getGitDir();
+		return fs.existsSync(path.join(gitDir, 'MERGE_HEAD'));
+	}
+
+	/** Which branch the stopped merge is bringing in, and into what. Undefined if no merge is in
+	 * progress. Drives the Conflicts tab's header, the same way getRebaseProgress does for a rebase. */
+	async getMergeProgress(): Promise<MergeProgress | undefined> {
+		const gitDir = await this.getGitDir();
+		const mergeHead = readFileIfExists(path.join(gitDir, 'MERGE_HEAD'));
+		if (!mergeHead) {
+			return undefined;
+		}
+		const subject = readFileIfExists(path.join(gitDir, 'MERGE_MSG'))?.split('\n')[0];
+		return {
+			branchName: parseMergedBranchName(subject) ?? mergeHead.slice(0, 7),
+			intoBranch: await this.getCurrentBranch(),
+		};
+	}
+
+	/** Works out what merging `branchName` into HEAD would do without touching the working tree or
+	 * index: how many commits each side has that the other doesn't (`rev-list --left-right --count`
+	 * prints "<HEAD-only> <branch-only>"), and -- only when a real merge is needed -- which files it
+	 * would conflict on. `git merge-tree --write-tree` (git 2.38+) runs the same merge machinery as
+	 * `git merge` but entirely in the object store, and with --name-only lists each conflicted path
+	 * after the result tree's id on its first line. Its exit status can't be used for this -- simple-git
+	 * only rejects when git also writes to stderr, and merge-tree doesn't, conflicts or not -- so the
+	 * listing itself is what gets read. */
+	async analyzeMerge(branchName: string): Promise<MergeAnalysis> {
+		assertNotOptionLike(branchName, 'branch name');
+		const counts = (await this.git.raw(['rev-list', '--left-right', '--count', `HEAD...${branchName}`])).trim();
+		const [outgoing, incoming] = counts.split(/\s+/).map(Number);
+		if (incoming === 0 || outgoing === 0) {
+			// Nothing to merge, or a fast-forward -- neither can conflict.
+			return { incoming, outgoing, conflicts: [] };
+		}
+		try {
+			const out = await this.git.raw(['merge-tree', '--write-tree', '--name-only', '--no-messages', 'HEAD', branchName]);
+			const conflicts = [...new Set(out.split('\n').slice(1).filter(Boolean))];
+			return { incoming, outgoing, conflicts };
+		} catch (err) {
+			// Only a prediction -- the merge itself still stops on any real conflict and hands off to the
+			// Conflicts tab either way, so failing here (e.g. a git too old for --write-tree) just means
+			// the dialog can't warn about them up front.
+			this.logger?.(`analyzeMerge(${branchName}): merge-tree failed, skipping conflict prediction: ${err}`);
+			return { incoming, outgoing, conflicts: [] };
+		}
+	}
+
+	/** Merges `branchName` into the current branch. A merge that stops on conflicts does NOT throw:
+	 * git reports those on stdout alone, and simple-git only rejects when stderr has output too
+	 * (verified: a conflicted `git merge` resolves normally here) -- callers check isMergeInProgress
+	 * afterward instead, which is what hands off to the Conflicts tab. Real failures (an unknown
+	 * branch, local changes git won't merge over, ...) do go to stderr, and throw as usual.
+	 *
+	 * `--autostash` works as it does for rebaseOnto: uncommitted changes are stashed first, held
+	 * (as MERGE_AUTOSTASH) through any conflict pause, and restored once the merge is committed or
+	 * aborted. --squash deliberately goes without it -- a squash never writes MERGE_HEAD, so if it
+	 * stopped on a conflict there'd be no merge to abort and the stash would stay parked out of sight
+	 * until some later commit happened to release it. Plain git already refuses to squash over local
+	 * changes that would collide, and leaves any others unstaged and out of the squash commit. */
+	async mergeBranch(branchName: string, options: MergeOptions): Promise<void> {
+		assertNotOptionLike(branchName, 'branch name');
+		if (options.squash) {
+			await this.git.raw(['merge', '--squash', branchName]);
+			if (!options.commit) {
+				return;
+			}
+			const conflicted = await this.getConflictedFiles();
+			if (conflicted.length > 0) {
+				throw new Error(
+					`The squash stopped on conflicts in ${conflicted.map(f => f.path).join(', ')}. Resolve and stage them, then commit to finish.`
+				);
+			}
+			// core.editor=true (see rebaseOnto) accepts git's own squash message -- the squashed
+			// commits' log -- as-is.
+			await this.git.raw(['-c', 'core.editor=true', 'commit']);
+			return;
+		}
+		const args = ['merge', '--autostash'];
+		// A --no-commit merge that fast-forwards has nothing left to "not commit" -- git would just move
+		// the branch -- so leaving the commit for later implies a real merge commit, too.
+		if (options.noFastForward || !options.commit) {
+			args.push('--no-ff');
+		}
+		args.push(options.commit ? '--no-edit' : '--no-commit', branchName);
+		await this.git.raw(args);
+	}
+
+	/** Moves the current branch up to `branchName` only if that's a pure fast-forward -- `--ff-only`
+	 * makes git refuse rather than quietly create a merge commit, in case the branches diverged since
+	 * the confirmation that promised a fast-forward was shown. */
+	async fastForwardTo(branchName: string): Promise<void> {
+		assertNotOptionLike(branchName, 'branch name');
+		await this.git.raw(['merge', '--ff-only', '--autostash', branchName]);
+	}
+
+	/** Concludes a stopped merge with git's own message ("Merge branch '...'"). core.editor=true (see
+	 * rebaseOnto) rather than --no-edit: after a conflict git appends "# Conflicts:" lines to that
+	 * message, and only an editor pass strips comment lines -- verified that --no-edit commits them
+	 * verbatim. Also what restores a MERGE_AUTOSTASH stashed by mergeBranch. */
+	async mergeCommit(): Promise<void> {
+		await this.git.raw(['-c', 'core.editor=true', 'commit']);
+	}
+
+	/** Restores the branch (and any autostashed local changes) to exactly where it was before the merge. */
+	async mergeAbort(): Promise<void> {
+		await this.git.raw(['merge', '--abort']);
+	}
+
 	async fetch(remote: string): Promise<void> {
 		await this.git.fetch(remote);
 	}
@@ -940,6 +1057,13 @@ function parseHeadName(headName: string | undefined): string | undefined {
 		return undefined;
 	}
 	return headName.startsWith('refs/heads/') ? headName.slice('refs/heads/'.length) : headName;
+}
+
+/** The first line of MERGE_MSG, e.g. "Merge branch 'alice/feature-x'" or "Merge branch 'b' into c" ->
+ * the branch being merged in. Undefined for anything else git might have written there (e.g. "Merge
+ * commit '1a2b3c4'" when merging a bare hash). */
+function parseMergedBranchName(subject: string | undefined): string | undefined {
+	return subject?.match(/^Merge (?:remote-tracking )?branch '([^']+)'/)?.[1];
 }
 
 /** Parses one line of git's rebase-todo syntax, e.g. "pick a1b2c3d Fix the thing" -> "Fix the thing". */

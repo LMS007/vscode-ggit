@@ -1,23 +1,28 @@
 import * as vscode from 'vscode';
 import { saveOpenDocumentIfDirty } from '../documentUtils';
 import { GitService } from '../git/gitService';
-import { RebaseHostMessage, RebaseWebviewMessage } from './rebaseProtocol';
+import { ConflictOperation, ConflictsHostMessage, ConflictsWebviewMessage } from './conflictsProtocol';
 
-/** The dedicated tab for working through an in-progress rebase's conflicts, one paused commit at a
- * time -- opened automatically the moment a rebase hits its first conflict (see updateRebaseContext
- * in extension.ts), and reachable afterward via the sidebar Conflicts view's permanent "Resolve
- * Conflicts" row (see conflictsTreeProvider.ts). Modeled on BranchHistoryPanel/CommitPanel: a single
- * webview panel, refreshed in place as the rebase progresses rather than reopened per commit. */
-export class RebaseConflictsPanel {
-	private static current: RebaseConflictsPanel | undefined;
+/** The dedicated tab for working through a stopped rebase or merge -- a rebase one paused commit at a
+ * time, a merge in a single pass. Opened automatically the moment either one stops (see
+ * updateConflictContext in extension.ts), and reachable afterward via the sidebar Conflicts view's
+ * permanent row (see conflictsTreeProvider.ts). Modeled on BranchHistoryPanel/CommitPanel: a single
+ * webview panel, refreshed in place as things progress rather than reopened per step. git can't be
+ * mid-rebase and mid-merge at once (each refuses to start while the other is in progress), so the tab
+ * only ever has one operation to show -- whichever refresh() finds. */
+export class ConflictsPanel {
+	private static current: ConflictsPanel | undefined;
 
 	private readonly panel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
 	private ready = false;
-	// Which rebase step (see GitService.getRebaseProgress) the current file list/count belong to --
-	// undefined until the first refresh. Reset whenever this changes, so "Staged files: n/m" always
-	// counts up from 0 for a freshly-encountered commit rather than carrying over the last one's tally.
-	private lastSeenStep: number | undefined;
+	// Which operation the last refresh found -- what the webview's continue/abort buttons act on.
+	private operation: ConflictOperation | undefined;
+	// Which step (a rebase's current commit, see GitService.getRebaseProgress, or the one step a merge
+	// has) the current file list/count belong to -- undefined until the first refresh. Reset whenever
+	// this changes, so "Staged files: n/m" always counts up from 0 for a freshly-encountered pause
+	// rather than carrying over the last one's tally.
+	private lastSeenStep: string | undefined;
 	private totalFilesThisCommit = 0;
 
 	private constructor(
@@ -26,8 +31,8 @@ export class RebaseConflictsPanel {
 		private readonly onChanged: () => void
 	) {
 		this.panel = vscode.window.createWebviewPanel(
-			'ggitRebase',
-			'Rebase',
+			'ggitResolveConflicts',
+			'Conflicts',
 			{ viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
 			{
 				enableScripts: true,
@@ -40,23 +45,23 @@ export class RebaseConflictsPanel {
 		);
 		this.panel.webview.html = this.getHtml(context);
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-		this.panel.webview.onDidReceiveMessage((msg: RebaseWebviewMessage) => this.handleMessage(msg), null, this.disposables);
+		this.panel.webview.onDidReceiveMessage((msg: ConflictsWebviewMessage) => this.handleMessage(msg), null, this.disposables);
 	}
 
 	static createOrShow(context: vscode.ExtensionContext, gitService: GitService, onChanged: () => void): void {
-		if (RebaseConflictsPanel.current) {
-			RebaseConflictsPanel.current.panel.reveal(vscode.ViewColumn.Active, false);
+		if (ConflictsPanel.current) {
+			ConflictsPanel.current.panel.reveal(vscode.ViewColumn.Active, false);
 			return;
 		}
-		RebaseConflictsPanel.current = new RebaseConflictsPanel(context, gitService, onChanged);
+		ConflictsPanel.current = new ConflictsPanel(context, gitService, onChanged);
 	}
 
 	/** Called from refreshAll -- keeps the open tab in sync with anything that changed it (its own
-	 * buttons, but also e.g. `git rebase --continue` run from the integrated terminal instead), and
-	 * closes it once there's nothing left to show, whatever the reason (finished, aborted, or resolved
-	 * some other way entirely). */
+	 * buttons, but also e.g. `git rebase --continue` or `git commit` run from the integrated terminal
+	 * instead), and closes it once there's nothing left to show, whatever the reason (finished,
+	 * aborted, or resolved some other way entirely). */
 	static refreshIfOpen(): void {
-		void RebaseConflictsPanel.current?.refresh();
+		void ConflictsPanel.current?.refresh();
 	}
 
 	private async refresh(): Promise<void> {
@@ -64,37 +69,64 @@ export class RebaseConflictsPanel {
 			return;
 		}
 		try {
-			const inProgress = await this.gitService.isRebaseInProgress();
-			if (!inProgress) {
-				// Nothing left to show, regardless of why -- Continue/Skip finishing the rebase, Abort
-				// unwinding it, or someone resolving it entirely outside this tab.
+			const [rebasing, merging] = await Promise.all([this.gitService.isRebaseInProgress(), this.gitService.isMergeInProgress()]);
+			if (!rebasing && !merging) {
+				// Nothing left to show, regardless of why -- finishing, aborting, or someone resolving it
+				// entirely outside this tab.
 				this.panel.dispose();
 				return;
 			}
-			const [files, progress] = await Promise.all([this.gitService.getConflictedFiles(), this.gitService.getRebaseProgress()]);
-			const current = progress?.current ?? 0;
-			if (this.lastSeenStep !== current) {
-				this.lastSeenStep = current;
-				this.totalFilesThisCommit = files.length;
+			this.operation = rebasing ? 'rebase' : 'merge';
+			const files = await this.gitService.getConflictedFiles();
+			if (this.operation === 'rebase') {
+				const progress = await this.gitService.getRebaseProgress();
+				const current = progress?.current ?? 0;
+				this.trackStep(`rebase:${current}`, files.length);
+				this.panel.title = progress?.branchName ? `Rebase: ${progress.branchName}` : 'Rebase';
+				this.post({
+					type: 'state',
+					state: {
+						operation: 'rebase',
+						branchName: progress?.branchName,
+						intoBranch: undefined,
+						current,
+						total: progress?.total ?? 0,
+						subject: progress?.subject,
+						files,
+						totalFilesThisCommit: this.totalFilesThisCommit,
+					},
+				});
+			} else {
+				const progress = await this.gitService.getMergeProgress();
+				this.trackStep('merge', files.length);
+				this.panel.title = progress?.branchName ? `Merge: ${progress.branchName}` : 'Merge';
+				this.post({
+					type: 'state',
+					state: {
+						operation: 'merge',
+						branchName: progress?.branchName,
+						intoBranch: progress?.intoBranch,
+						current: 0,
+						total: 0,
+						subject: undefined,
+						files,
+						totalFilesThisCommit: this.totalFilesThisCommit,
+					},
+				});
 			}
-			this.panel.title = progress?.branchName ? `Rebase: ${progress.branchName}` : 'Rebase';
-			this.post({
-				type: 'state',
-				state: {
-					branchName: progress?.branchName,
-					current,
-					total: progress?.total ?? 0,
-					subject: progress?.subject,
-					files,
-					totalFilesThisCommit: this.totalFilesThisCommit,
-				},
-			});
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
 		}
 	}
 
-	private async handleMessage(msg: RebaseWebviewMessage): Promise<void> {
+	private trackStep(step: string, fileCount: number): void {
+		if (this.lastSeenStep !== step) {
+			this.lastSeenStep = step;
+			this.totalFilesThisCommit = fileCount;
+		}
+	}
+
+	private async handleMessage(msg: ConflictsWebviewMessage): Promise<void> {
 		switch (msg.type) {
 			case 'ready':
 				this.ready = true;
@@ -113,11 +145,17 @@ export class RebaseConflictsPanel {
 			case 'openFile':
 				try {
 					const uri = vscode.Uri.file(this.gitService.resolveRepoPath(msg.path));
-					const openGroup = findOpenTextTabGroup(uri);
+					// Never this tab's own group: showing the file there would cover this tab -- and its
+					// checkboxes and Continue/Abort buttons -- for as long as the file's being resolved.
+					// That's the usual case, too, not an edge one: a file someone was already editing
+					// before the rebase/merge stopped is open in whatever group was active, which is
+					// exactly where this tab then opened (see createOrShow). Verified in a live Extension
+					// Development Host that reusing that copy hid this tab behind it.
+					const openGroup = findOpenTextTabGroup(uri, this.panel.viewColumn);
 					if (openGroup) {
-						// Already open somewhere (most likely left over from resolving this same file a
-						// moment ago) -- just bring that tab forward instead of opening a second copy of
-						// it, possibly in yet another column.
+						// Already open in some other group (most likely left over from resolving this same
+						// file a moment ago) -- just bring that tab forward instead of opening a second copy
+						// of it, possibly in yet another column.
 						await vscode.window.showTextDocument(uri, { viewColumn: openGroup, preserveFocus: false });
 					} else {
 						await vscode.commands.executeCommand('vscode.open', uri, {
@@ -129,29 +167,32 @@ export class RebaseConflictsPanel {
 					vscode.window.showErrorMessage(`GGit: Failed to open file: ${(err as Error).message}`);
 				}
 				break;
-			// These three already run through their own registered commands (ggit.rebase* in
+			// These already run through their own registered commands (ggit.rebase*/ggit.merge* in
 			// extension.ts), which wrap them in a progress notification and call refreshAll on success --
-			// including, via RebaseConflictsPanel.refreshIfOpen, right back into this panel's own
-			// refresh(). Abort's confirmation modal lives there too, so it's identical whether triggered
-			// from here or the sidebar's own Abort button.
+			// including, via ConflictsPanel.refreshIfOpen, right back into this panel's own refresh().
+			// Abort's confirmation modal lives there too, so it's identical whether triggered from here
+			// or the sidebar's own Abort button.
 			case 'continue':
-				void vscode.commands.executeCommand('ggit.rebaseContinue');
+				void vscode.commands.executeCommand(this.operation === 'merge' ? 'ggit.mergeCommit' : 'ggit.rebaseContinue');
 				break;
 			case 'skip':
-				void vscode.commands.executeCommand('ggit.rebaseSkip');
+				// Merges have no per-commit steps to skip -- the webview hides this button for one.
+				if (this.operation === 'rebase') {
+					void vscode.commands.executeCommand('ggit.rebaseSkip');
+				}
 				break;
 			case 'abort':
-				void vscode.commands.executeCommand('ggit.rebaseAbort');
+				void vscode.commands.executeCommand(this.operation === 'merge' ? 'ggit.mergeAbort' : 'ggit.rebaseAbort');
 				break;
 		}
 	}
 
-	private post(message: RebaseHostMessage): void {
+	private post(message: ConflictsHostMessage): void {
 		void this.panel.webview.postMessage(message);
 	}
 
 	private dispose(): void {
-		RebaseConflictsPanel.current = undefined;
+		ConflictsPanel.current = undefined;
 		while (this.disposables.length) {
 			this.disposables.pop()?.dispose();
 		}
@@ -159,7 +200,7 @@ export class RebaseConflictsPanel {
 
 	private getHtml(context: vscode.ExtensionContext): string {
 		const webview = this.panel.webview;
-		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'dist', 'rebaseWebview.js'));
+		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'dist', 'conflictsWebview.js'));
 		const codiconCssUri = webview.asWebviewUri(
 			vscode.Uri.joinPath(context.extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css')
 		);
@@ -170,7 +211,7 @@ export class RebaseConflictsPanel {
 <head>
 	<meta charset="UTF-8">
 	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
-	<title>Rebase</title>
+	<title>Conflicts</title>
 	<link href="${codiconCssUri}" rel="stylesheet" />
 	<style>
 		html, body {
@@ -185,6 +226,16 @@ export class RebaseConflictsPanel {
 		#progress {
 			padding: 10px 14px 0 14px;
 			color: var(--vscode-descriptionForeground);
+		}
+		/* Merge only -- which side of a conflict is which, since "Current"/"Incoming" is all the
+		 * editor's own conflict markers and Accept buttons call them. */
+		#hint {
+			padding: 4px 14px 0 14px;
+			color: var(--vscode-descriptionForeground);
+			font-size: 0.9em;
+		}
+		#hint:empty {
+			display: none;
 		}
 		#toolbar {
 			display: flex;
@@ -207,6 +258,11 @@ export class RebaseConflictsPanel {
 			font-family: inherit;
 			font-size: inherit;
 			cursor: pointer;
+		}
+		/* The display above otherwise always wins over the UA stylesheet's own [hidden] rule (same as
+		 * the History tab's toolbar) -- without this, hiding Skip for a merge wouldn't actually hide it. */
+		.toolbar-btn[hidden] {
+			display: none;
 		}
 		.toolbar-btn:hover:not(:disabled) {
 			border-color: rgba(200, 200, 200, 0.85);
@@ -310,6 +366,7 @@ export class RebaseConflictsPanel {
 </head>
 <body>
 	<div id="progress"></div>
+	<div id="hint"></div>
 	<div id="toolbar">
 		<button id="continueButton" class="toolbar-btn" disabled>
 			<span class="codicon codicon-check"></span><span id="continueLabel">Next Commit</span>
@@ -318,7 +375,7 @@ export class RebaseConflictsPanel {
 			<span class="codicon codicon-debug-step-over"></span>Skip Commit
 		</button>
 		<button id="abortButton" class="toolbar-btn">
-			<span class="codicon codicon-circle-slash"></span>Abort Rebase
+			<span class="codicon codicon-circle-slash"></span><span id="abortLabel">Abort Rebase</span>
 		</button>
 		<span id="stagedText"></span>
 	</div>
@@ -334,9 +391,13 @@ export class RebaseConflictsPanel {
  * opening a conflicted file so repeatedly clicking the same row (or clicking it again after it was
  * already opened once) focuses that tab instead of stacking up duplicates. Deliberately only matches
  * a real text tab (TabInputText), not a diff or any other kind -- this file is always opened plainly
- * (see 'openFile' above), never as one side of a diff. */
-function findOpenTextTabGroup(uri: vscode.Uri): vscode.ViewColumn | undefined {
+ * (see 'openFile' above), never as one side of a diff. Skips `excludeColumn` (the Conflicts tab's own
+ * group -- see 'openFile'). */
+function findOpenTextTabGroup(uri: vscode.Uri, excludeColumn: vscode.ViewColumn | undefined): vscode.ViewColumn | undefined {
 	for (const group of vscode.window.tabGroups.all) {
+		if (group.viewColumn === excludeColumn) {
+			continue;
+		}
 		const isOpenHere = group.tabs.some(t => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
 		if (isOpenHere) {
 			return group.viewColumn;
