@@ -39,11 +39,11 @@ const TOOLBAR_BUTTONS: {
 	{ command: 'ggit.sync', icon: 'sync', label: 'Sync' },
 	{ command: 'ggit.refresh', icon: 'refresh', label: 'Refresh' },
 	{ command: 'ggit.rebase', icon: 'git-merge', label: 'Rebase' },
-	// trailingIcon: a second, direction-indicating arrow to the right of the label — up for bringing a
-	// stash *out* into the working tree, down for putting one *away* into storage — on top of (not
-	// instead of) each button's own leading icon.
-	{ command: 'ggit.applyStash', icon: 'inbox', label: 'Apply Stash', trailingIcon: 'arrow-up', separatorBefore: true },
-	{ command: 'ggit.stashAll', icon: 'archive', label: 'Save Stash', trailingIcon: 'arrow-down' },
+	// trailingIcon: a second, direction-indicating arrow to the right of the label — down for bringing a
+	// stash back into the working tree, up for putting changes away into one (the same directions as
+	// the Working Copy view's stash icons) — on top of (not instead of) each button's own leading icon.
+	{ command: 'ggit.applyStash', icon: 'inbox', label: 'Apply Stash', trailingIcon: 'arrow-down', separatorBefore: true },
+	{ command: 'ggit.stashAll', icon: 'archive', label: 'Save Stash', trailingIcon: 'arrow-up' },
 	// Its own group of one -- separated from the stash pair so Commit (and View on GitHub, appended
 	// after it below) don't read as more stash-related actions.
 	{ command: 'ggit.commit', icon: 'check', label: 'Commit', primary: true, separatorBefore: true },

@@ -168,12 +168,18 @@
       {
         "command": "ggit.stashAll",
         "title": "GGit: Stash All Changes",
-        "icon": "$(archive)"
+        "icon": {
+          "light": "media/stash-save-orange-light.svg",
+          "dark": "media/stash-save-orange-dark.svg"
+        }
       },
       {
         "command": "ggit.applyStash",
         "title": "GGit: Apply Stash",
-        "icon": "$(inbox)"
+        "icon": {
+          "light": "media/stash-apply-blue-light.svg",
+          "dark": "media/stash-apply-blue-dark.svg"
+        }
       },
       {
         "command": "ggit.stashSelectedFiles",
