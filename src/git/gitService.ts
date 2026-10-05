@@ -14,7 +14,9 @@ import {
 	RebaseProgress,
 	RefBadge,
 	RemoteBranchInfo,
+	RemoteTagInfo,
 	StashInfo,
+	TagInfo,
 	WorkingChangeFile,
 } from './types';
 
@@ -259,6 +261,74 @@ export class GitService {
 
 	async deleteBranch(name: string, force = false): Promise<void> {
 		await this.git.raw(['branch', force ? '-D' : '-d', name]);
+	}
+
+	/** Every local tag. lstrip=2 rather than refname:short, which turns into "tags/<name>" whenever a
+	 * branch shares the tag's name. %(*objectname) is the peeled commit -- empty for a lightweight tag,
+	 * whose own objectname already is the commit. */
+	async listTags(): Promise<TagInfo[]> {
+		const format = [
+			'%(refname:lstrip=2)',
+			'%(objectname)',
+			'%(*objectname)',
+			'%(objecttype)',
+			'%(creatordate:iso-strict)',
+			'%(contents:subject)',
+		].join(FIELD_SEP);
+		const out = await this.git.raw(['for-each-ref', `--format=${format}`, 'refs/tags']);
+		return out
+			.split('\n')
+			.filter(Boolean)
+			.map(line => {
+				const [name, sha, peeled, type, date, subject] = line.split(FIELD_SEP);
+				return { name, sha, commit: peeled || sha, annotated: type === 'tag', subject: subject ?? '', date };
+			});
+	}
+
+	/** The tags `remote` has right now, keyed by name. A network call -- unlike remote branches, git
+	 * keeps no local record of a remote's tags (fetch writes them straight into refs/tags). Each
+	 * annotated tag is listed twice, the tag object and then its peeled "^{}" commit, which is how
+	 * this fills in `commit`. */
+	async listRemoteTags(remote: string): Promise<Map<string, RemoteTagInfo>> {
+		assertNotOptionLike(remote, 'remote name');
+		const out = await this.time(`listRemoteTags(${remote}): ls-remote`, () => this.git.raw(['ls-remote', '--tags', remote]));
+		const tags = new Map<string, RemoteTagInfo>();
+		for (const line of out.split('\n')) {
+			const [sha, ref] = line.trim().split('\t');
+			if (!sha || !ref?.startsWith('refs/tags/')) {
+				continue;
+			}
+			const isPeeled = ref.endsWith('^{}');
+			const name = ref.slice('refs/tags/'.length, isPeeled ? -'^{}'.length : undefined);
+			const existing = tags.get(name);
+			tags.set(name, isPeeled ? { sha: existing?.sha ?? sha, commit: sha } : { sha, commit: existing?.commit ?? sha });
+		}
+		return tags;
+	}
+
+	/** Sends a local tag to `remote`. A tag that's already there is never silently replaced: git
+	 * rejects that unless forced, and `replacing` is the only way to force it -- the remote's current
+	 * value, as a lease, so the overwrite only goes through if nobody changed the remote's tag since. */
+	async pushTag(remote: string, name: string, options: { replacing?: string } = {}): Promise<void> {
+		assertNotOptionLike(remote, 'remote name');
+		const ref = `refs/tags/${name}`;
+		const args = ['push'];
+		if (options.replacing) {
+			assertObjectId(options.replacing);
+			args.push(`--force-with-lease=${ref}:${options.replacing}`);
+		}
+		args.push(remote, `${ref}:${ref}`);
+		await this.git.raw(args);
+	}
+
+	async deleteTag(name: string): Promise<void> {
+		assertNotOptionLike(name, 'tag name');
+		await this.git.raw(['tag', '-d', name]);
+	}
+
+	async deleteRemoteTag(remote: string, name: string): Promise<void> {
+		assertNotOptionLike(remote, 'remote name');
+		await this.git.raw(['push', '--delete', remote, `refs/tags/${name}`]);
 	}
 
 	async renameBranch(oldName: string, newName: string): Promise<void> {

@@ -112,6 +112,28 @@ export interface MergeOptions {
 	commit: boolean;
 }
 
+/** A local tag -- see GitService.listTags. */
+export interface TagInfo {
+	name: string;
+	/** What refs/tags/<name> itself points at: the tag object for an annotated tag, the commit for a
+	 * lightweight one. This, not `commit`, is what a remote's copy gets compared against, since it's
+	 * what a push would have to overwrite. */
+	sha: string;
+	/** The commit the tag ultimately points at. */
+	commit: string;
+	annotated: boolean;
+	/** The annotated tag's own message subject, or the tagged commit's subject for a lightweight tag. */
+	subject: string;
+	/** Tagger date for an annotated tag, the commit's date for a lightweight one. */
+	date: string;
+}
+
+/** One remote's copy of a tag, as `git ls-remote` reports it -- same `sha`/`commit` split as TagInfo. */
+export interface RemoteTagInfo {
+	sha: string;
+	commit: string;
+}
+
 export interface StashInfo {
 	/** "stash@{0}" — the reflog-style ref git's own stash commands expect. */
 	ref: string;

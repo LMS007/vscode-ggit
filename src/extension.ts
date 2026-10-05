@@ -37,6 +37,9 @@ import { ConflictsTreeProvider } from './tree/conflictsTreeProvider';
 import { MAX_PINNED_BRANCH_COUNT, MIN_PINNED_BRANCH_COUNT, RecentBranches } from './tree/recentBranches';
 import { RemotesTreeProvider } from './tree/remotesTreeProvider';
 import { StashesTreeProvider } from './tree/stashesTreeProvider';
+import { TagNode, TagsTreeProvider } from './tree/tagsTreeProvider';
+import { TagPanel } from './tag/tagPanel';
+import { TagDialogMode } from './tag/tagProtocol';
 import { WorkingChangeDecorationProvider } from './tree/workingChangeDecoration';
 import { isCreateCommitNode, isWorkingChangeFile, WorkingCopyNode, WorkingCopyTreeProvider } from './tree/workingCopyTreeProvider';
 
@@ -61,6 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	const remotesProvider = new RemotesTreeProvider(gitService);
 	const workingCopyProvider = new WorkingCopyTreeProvider(gitService);
 	const stashesProvider = new StashesTreeProvider(gitService);
+	const tagsProvider = new TagsTreeProvider(gitService);
 	const conflictsProvider = new ConflictsTreeProvider();
 	const commitLauncherProvider = new CommitLauncherViewProvider(gitService, () =>
 		vscode.commands.executeCommand('ggit.commit')
@@ -102,6 +106,14 @@ export function activate(context: vscode.ExtensionContext): void {
 	// status instead (see ggit.searchRemotes below), which falls back to this same folder name once
 	// the filter's cleared.
 	remotesView.description = workspaceFolder.name;
+
+	// Same folder-name description as the views above, except while remotes are being checked for
+	// their tags (or couldn't be reached) -- see TagsTreeProvider.
+	const tagsView = vscode.window.createTreeView('ggitTags', { treeDataProvider: tagsProvider });
+	tagsView.description = workspaceFolder.name;
+	tagsProvider.onDidChangeRemoteStatus(status => {
+		tagsView.description = status ?? workspaceFolder.name;
+	});
 
 	// Multi-select is for bulk delete only — Apply always acts on just the row you right-clicked,
 	// ignoring the rest of the selection (see ggit.applyStashItem below).
@@ -167,6 +179,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		remotesProvider.refresh();
 		workingCopyProvider.refresh();
 		stashesProvider.refresh();
+		tagsProvider.refresh();
 		conflictsProvider.refresh();
 		activeBranchDecorations.refresh();
 		workingChangeDecorations.refresh();
@@ -177,6 +190,25 @@ export function activate(context: vscode.ExtensionContext): void {
 		CommitPanel.refreshIfOpen();
 		void commitLauncherProvider.refresh();
 		ConflictsPanel.refreshIfOpen();
+	};
+
+	// refreshAll plus re-asking each remote which tags it has -- a network call, so only after
+	// operations that talk to a remote anyway (see TagsTreeProvider), not on every refreshAll.
+	const refreshAllAndRemoteTags = () => {
+		refreshAll();
+		tagsProvider.refreshRemotes();
+	};
+
+	const openTagDialog = (mode: TagDialogMode, node: TagNode | undefined) => {
+		if (node) {
+			TagPanel.createOrShow(context, gitService, mode, node, remoteChanged => {
+				refreshAll();
+				if (remoteChanged) {
+					tagsProvider.refreshRemotes();
+				}
+				BranchHistoryPanel.refreshIfOpen();
+			});
+		}
 	};
 
 	// A local branch dropped onto the HEAD branch (see BranchesDragAndDropController). Everything is
@@ -273,6 +305,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		workingCopyView,
 		branchesView,
 		remotesView,
+		tagsView,
 		conflictsView,
 		vscode.window.registerWebviewViewProvider('ggitCommitLauncher', commitLauncherProvider),
 		stashesView,
@@ -353,11 +386,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		// trigger, like the Branches view's toolbar, calls these with no args and each falls back to
 		// its own sensible default (see pickDefaultRemote/pickRemote in gitActions.ts).
 		vscode.commands.registerCommand('ggit.fetch', (remote?: string) =>
-			runGitOperation('Fetching…', () => fetchCurrentBranch(gitService, remote), refreshAll)
+			runGitOperation('Fetching…', () => fetchCurrentBranch(gitService, remote), refreshAllAndRemoteTags)
 		),
 
 		vscode.commands.registerCommand('ggit.pull', (remote?: string) =>
-			runGitOperation('Pulling…', () => pullCurrentBranch(gitService, remote), refreshAll)
+			runGitOperation('Pulling…', () => pullCurrentBranch(gitService, remote), refreshAllAndRemoteTags)
 		),
 
 		vscode.commands.registerCommand('ggit.push', (remote?: string) =>
@@ -365,7 +398,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		),
 
 		vscode.commands.registerCommand('ggit.sync', (remote?: string) =>
-			runGitOperation('Syncing…', () => syncCurrentBranch(gitService, remote), refreshAll)
+			runGitOperation('Syncing…', () => syncCurrentBranch(gitService, remote), refreshAllAndRemoteTags)
 		),
 
 		vscode.commands.registerCommand('ggit.rebase', () =>
@@ -685,6 +718,26 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('ggit.copyBranchName', async (node: BranchTreeNode<BranchInfo>) => {
 			if (node.kind === 'leaf') {
 				await vscode.env.clipboard.writeText(node.item.name);
+			}
+		}),
+
+		// A tag's history, same as a branch's -- the tagged commit first, then everything older.
+		vscode.commands.registerCommand('ggit.tagClicked', (tagName: string) => {
+			BranchHistoryPanel.createOrShow(context, gitService, tagName);
+		}),
+
+		vscode.commands.registerCommand('ggit.refreshTags', () => {
+			tagsProvider.refresh();
+			tagsProvider.refreshRemotes();
+		}),
+
+		vscode.commands.registerCommand('ggit.publishTag', (node?: TagNode) => openTagDialog('publish', node)),
+		vscode.commands.registerCommand('ggit.pushTag', (node?: TagNode) => openTagDialog('push', node)),
+		vscode.commands.registerCommand('ggit.deleteTag', (node?: TagNode) => openTagDialog('delete', node)),
+
+		vscode.commands.registerCommand('ggit.copyTagName', async (node?: TagNode) => {
+			if (node) {
+				await vscode.env.clipboard.writeText(node.name);
 			}
 		}),
 

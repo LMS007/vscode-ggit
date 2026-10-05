@@ -64,6 +64,11 @@
           "initialSize": 3
         },
         {
+          "id": "ggitTags",
+          "name": "Tags",
+          "initialSize": 2
+        },
+        {
           "id": "ggitStashes",
           "name": "Stashes",
           "initialSize": 2
@@ -264,6 +269,27 @@
       {
         "command": "ggit.deleteStash",
         "title": "Delete Stash"
+      },
+      {
+        "command": "ggit.refreshTags",
+        "title": "GGit: Refresh Tags",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "ggit.publishTag",
+        "title": "Publish Tag…"
+      },
+      {
+        "command": "ggit.pushTag",
+        "title": "Push Tag…"
+      },
+      {
+        "command": "ggit.deleteTag",
+        "title": "Delete Tag…"
+      },
+      {
+        "command": "ggit.copyTagName",
+        "title": "Copy Tag Name"
       }
     ],
     "submenus": [
@@ -347,6 +373,11 @@
           "command": "ggit.refresh",
           "when": "view == ggitRemotes",
           "group": "navigation@2"
+        },
+        {
+          "command": "ggit.refreshTags",
+          "when": "view == ggitTags",
+          "group": "navigation@0"
         },
         {
           "command": "ggit.rebaseAbort",
@@ -454,6 +485,44 @@
           "command": "ggit.deleteStash",
           "when": "view == ggitStashes && viewItem == stash",
           "group": "9_delete@1"
+        },
+        {
+          "command": "ggit.publishTag",
+          "when": "view == ggitTags && viewItem =~ /\\bcanPublish\\b/",
+          "group": "1_remote@1"
+        },
+        {
+          "command": "ggit.pushTag",
+          "when": "view == ggitTags && viewItem =~ /\\bcanPush\\b/",
+          "group": "1_remote@2"
+        },
+        {
+          "command": "ggit.copyTagName",
+          "when": "view == ggitTags && viewItem =~ /^tag\\b/",
+          "group": "2_modify@1"
+        },
+        {
+          "command": "ggit.deleteTag",
+          "when": "view == ggitTags && viewItem =~ /^tag\\b/",
+          "group": "9_delete@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ggit.publishTag",
+          "when": "false"
+        },
+        {
+          "command": "ggit.pushTag",
+          "when": "false"
+        },
+        {
+          "command": "ggit.deleteTag",
+          "when": "false"
+        },
+        {
+          "command": "ggit.copyTagName",
+          "when": "false"
         }
       ],
       "ggit.ignoreSubmenu": [

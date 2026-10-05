@@ -176,6 +176,24 @@ async function main() {
 		],
 	});
 
+	// The Publish/Push/Delete Tag dialog -- another independent form-style webview.
+	const tagWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/tag/tagWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/tagWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
 	const contexts = [
 		extensionCtx,
 		webviewCtx,
@@ -185,6 +203,7 @@ async function main() {
 		addRemoteWebviewCtx,
 		conflictsWebviewCtx,
 		mergeWebviewCtx,
+		tagWebviewCtx,
 	];
 
 	if (watch) {
