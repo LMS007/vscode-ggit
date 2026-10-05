@@ -321,6 +321,35 @@ export class GitService {
 		await this.git.raw(args);
 	}
 
+	/** The commit a local branch currently points at, and its subject. */
+	async getBranchTip(branchName: string): Promise<{ sha: string; subject: string }> {
+		const out = await this.git.raw(['log', '-1', `--format=%H${FIELD_SEP}%s`, `refs/heads/${branchName}`, '--']);
+		const [sha, subject] = out.trim().split(FIELD_SEP);
+		if (!sha) {
+			throw new Error(`Branch "${branchName}" not found.`);
+		}
+		return { sha, subject: subject ?? '' };
+	}
+
+	/** With a `message` it's an annotated tag -- it records who tagged and when, and it's what `git
+	 * describe` and `push --follow-tags` look for. Without one it's lightweight, just a name for the
+	 * commit. --cleanup=whitespace keeps message lines starting with "#" (e.g. "#123 fixed"), which
+	 * git's default cleanup strips as comments even from -m. --no-sign on a lightweight tag stops a
+	 * tag.gpgSign config from turning it into a signed one, which needs a message -- git would open
+	 * an editor for it that nothing here can answer. */
+	async createTag(name: string, sha: string, message?: string): Promise<void> {
+		assertNotOptionLike(name, 'tag name');
+		assertObjectId(sha);
+		const args = ['tag'];
+		if (message) {
+			args.push('-a', '-m', message, '--cleanup=whitespace');
+		} else {
+			args.push('--no-sign');
+		}
+		args.push(name, sha);
+		await this.git.raw(args);
+	}
+
 	async deleteTag(name: string): Promise<void> {
 		assertNotOptionLike(name, 'tag name');
 		await this.git.raw(['tag', '-d', name]);

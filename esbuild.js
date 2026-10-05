@@ -194,6 +194,24 @@ async function main() {
 		],
 	});
 
+	// Create Tag from Here -- a form (name + message), so its own bundle rather than tagWebview's.
+	const createTagWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/tag/createTagWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/createTagWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
 	const contexts = [
 		extensionCtx,
 		webviewCtx,
@@ -204,6 +222,7 @@ async function main() {
 		conflictsWebviewCtx,
 		mergeWebviewCtx,
 		tagWebviewCtx,
+		createTagWebviewCtx,
 	];
 
 	if (watch) {

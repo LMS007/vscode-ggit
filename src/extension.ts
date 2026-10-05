@@ -38,6 +38,7 @@ import { MAX_PINNED_BRANCH_COUNT, MIN_PINNED_BRANCH_COUNT, RecentBranches } from
 import { RemotesTreeProvider } from './tree/remotesTreeProvider';
 import { StashesTreeProvider } from './tree/stashesTreeProvider';
 import { TagNode, TagsTreeProvider } from './tree/tagsTreeProvider';
+import { CreateTagPanel } from './tag/createTagPanel';
 import { TagPanel } from './tag/tagPanel';
 import { TagDialogMode } from './tag/tagProtocol';
 import { WorkingChangeDecorationProvider } from './tree/workingChangeDecoration';
@@ -690,6 +691,13 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('ggit.createBranchFrom', (node: BranchTreeNode<BranchInfo>) => {
 			if (node.kind === 'leaf') {
 				CreateBranchPanel.createOrShow(context, gitService, refreshAll, node.item.name);
+			}
+		}),
+
+		// Tags the branch's tip, not HEAD -- the right-clicked branch needn't be the checked-out one.
+		vscode.commands.registerCommand('ggit.createTagFrom', (node?: BranchTreeNode<BranchInfo>) => {
+			if (node?.kind === 'leaf') {
+				CreateTagPanel.createOrShow(context, gitService, node.item.name, refreshAll);
 			}
 		}),
 
