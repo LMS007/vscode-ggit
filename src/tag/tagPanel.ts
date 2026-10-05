@@ -276,8 +276,39 @@ export class TagPanel {
 		.checkbox-field[hidden] {
 			display: none;
 		}
+		/* Redrawn with VS Code's own checkbox theme tokens, same as the Commit tab's -- the native
+		 * control shows up as a stray white square in dark themes. */
 		.checkbox-field input {
-			margin-top: 3px;
+			appearance: none;
+			-webkit-appearance: none;
+			width: 16px;
+			height: 16px;
+			margin: 2px 0 0 0;
+			flex: 0 0 auto;
+			border: 1px solid var(--vscode-checkbox-border, #6b6b6b);
+			border-radius: 3px;
+			background-color: var(--vscode-checkbox-background, #313131);
+			cursor: pointer;
+			position: relative;
+		}
+		.checkbox-field input:checked {
+			background-color: var(--vscode-checkbox-selectBackground, var(--vscode-checkbox-background, #313131));
+			border-color: var(--vscode-checkbox-selectBorder, var(--vscode-checkbox-border, #6b6b6b));
+		}
+		.checkbox-field input:checked::after {
+			content: "";
+			position: absolute;
+			left: 4px;
+			top: 1px;
+			width: 4px;
+			height: 8px;
+			border: solid var(--vscode-checkbox-foreground, #cccccc);
+			border-width: 0 2px 2px 0;
+			transform: rotate(45deg);
+		}
+		.checkbox-field input:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
 		}
 		.checkbox-field .checkbox-text strong {
 			display: block;
