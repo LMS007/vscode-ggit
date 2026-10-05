@@ -268,6 +268,16 @@ export class BranchHistoryPanel {
 					this.post({ type: 'error', message: (err as Error).message });
 				}
 				break;
+			case 'getCommitMessage':
+				// No 'error' post on failure -- that replaces the whole commit list. The expanded details
+				// just keep showing the subject line they started with.
+				try {
+					const message = await this.gitService.getCommitMessage(msg.sha);
+					this.post({ type: 'commitMessage', sha: msg.sha, message });
+				} catch (err) {
+					this.gitService.log(`getCommitMessage(${msg.sha}) failed: ${(err as Error).message}`);
+				}
+				break;
 			case 'openDiff':
 				try {
 					await openDiffForFile(this.gitService, msg.sha, msg.file);
@@ -777,6 +787,54 @@ export class BranchHistoryPanel {
 			overflow: hidden;
 			text-overflow: ellipsis;
 			white-space: nowrap;
+		}
+		/* The double-click details panel under a commit row (see toggleCommitDetails) -- its own graph
+		 * column carries the branch line on past it to the next commit, or leaves it ending at the dot
+		 * above when it's under the last one. */
+		.commit-details-wrapper {
+			display: flex;
+			align-items: stretch;
+		}
+		.commit-row-wrapper:has(+ .commit-details-wrapper:last-child) .commit-graph-line { bottom: 50%; }
+		.commit-details-wrapper:last-child .commit-graph-line { display: none; }
+		.commit-row-wrapper.expanded .commit-row::after { display: none; }
+		.commit-details {
+			flex: 1 1 auto;
+			min-width: 0;
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			margin: 0 8px 2px;
+			padding: 8px 10px;
+			border-radius: 6px;
+			background-color: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.1));
+			cursor: text;
+		}
+		.commit-details-meta {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr);
+			gap: 2px 10px;
+			font-size: 0.9em;
+		}
+		.commit-details-label { color: var(--vscode-descriptionForeground); }
+		.commit-details-value { overflow-wrap: anywhere; }
+		/* Head and tail split so a narrow pane ellipsizes the middle -- the last four characters, the
+		 * part people compare hashes by, always stay visible. */
+		.commit-details-hash {
+			display: flex;
+			min-width: 0;
+			font-family: var(--vscode-editor-font-family, monospace);
+		}
+		.commit-details-hash-head {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.commit-details-hash-tail { flex: 0 0 auto; }
+		.commit-details-message {
+			white-space: pre-wrap;
+			overflow-wrap: anywhere;
 		}
 		.ref-badge {
 			display: inline-block;

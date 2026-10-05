@@ -452,6 +452,15 @@ export class GitService {
 		return this.git.raw(['format-patch', '-1', sha, '--stdout']);
 	}
 
+	/** The commit's full raw message (subject, blank line, body) -- getLog only carries the subject
+	 * (%s), since a multi-line body would break its one-commit-per-line parsing. Fetched on demand when
+	 * a History row is expanded rather than for every commit in the log. */
+	async getCommitMessage(sha: string): Promise<string> {
+		assertObjectId(sha);
+		const out = await this.git.raw(['log', '-1', '--format=%B', sha, '--']);
+		return out.trimEnd();
+	}
+
 	async getCommitFiles(sha: string): Promise<ChangedFile[]> {
 		assertObjectId(sha);
 		const base = await this.time(`getCommitFiles(${sha}): getDiffBase`, () => this.getDiffBase(sha));

@@ -151,6 +151,11 @@ let loadingMoreCommits = false;
 // of a loop rather than a single scroll-triggered fetch).
 let bulkLoadingForSearch = false;
 let searchQuery = '';
+// The commit whose double-click details panel is open -- at most one at a time.
+let expandedSha: string | undefined;
+// Full messages already fetched via 'getCommitMessage', so re-opening a commit (or the list
+// re-rendering under an open one) doesn't need another round trip.
+const commitMessages = new Map<string, string>();
 
 function escapeHtml(text: string): string {
 	return text
@@ -192,6 +197,67 @@ function renderCommits(commits: CommitInfo[]): void {
 		return;
 	}
 	commitsEl.innerHTML = commits.map(commitRowHtml).join('');
+	renderCommitDetails();
+}
+
+const DETAILS_ID = 'commitDetails';
+
+/** The author date in the viewer's own time zone, zone name included -- git records it in the
+ * author's offset, which isn't necessarily the viewer's. */
+function formatLocalDateTime(iso: string): string {
+	return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'long' });
+}
+
+/** Starts out showing just the subject (all the log carries) until 'commitMessage' fills in the
+ * rest -- for a commit with no body that's already the whole message, so nothing visibly changes.
+ * The hash is split so a too-narrow pane ellipsizes its middle, never its last four characters. */
+function commitDetailsHtml(c: CommitInfo): string {
+	return `<div id="${DETAILS_ID}" class="commit-details-wrapper">
+			<div class="commit-graph"><div class="commit-graph-line"></div></div>
+			<div class="commit-details">
+				<div class="commit-details-meta">
+					<span class="commit-details-label">Commit</span>
+					<span class="commit-details-hash" title="${c.hash}"><span class="commit-details-hash-head">${c.hash.slice(0, -4)}</span><span class="commit-details-hash-tail">${c.hash.slice(-4)}</span></span>
+					<span class="commit-details-label">Author</span>
+					<span class="commit-details-value">${escapeHtml(c.authorName)} &lt;${escapeHtml(c.authorEmail)}&gt;</span>
+					<span class="commit-details-label">Date</span>
+					<span class="commit-details-value">${escapeHtml(formatLocalDateTime(c.date))}</span>
+				</div>
+				<div class="commit-details-message">${escapeHtml(commitMessages.get(c.hash) ?? c.message)}</div>
+			</div>
+		</div>`;
+}
+
+/** (Re)places the details panel under expandedSha's row -- called on toggle and after anything that
+ * rebuilds the list's innerHTML (which drops the panel along with every row). Does nothing while
+ * that commit isn't rendered, e.g. filtered out by a search; it reappears once it is again. */
+function renderCommitDetails(): void {
+	document.getElementById(DETAILS_ID)?.remove();
+	commitsEl.querySelector('.commit-row-wrapper.expanded')?.classList.remove('expanded');
+	if (!expandedSha) {
+		return;
+	}
+	const commit = currentCommits.find(c => c.hash === expandedSha);
+	const wrapper = commitsEl
+		.querySelector<HTMLElement>(`.row[data-sha="${expandedSha}"]`)
+		?.closest<HTMLElement>('.commit-row-wrapper');
+	if (!commit || !wrapper) {
+		return;
+	}
+	wrapper.classList.add('expanded');
+	wrapper.insertAdjacentHTML('afterend', commitDetailsHtml(commit));
+}
+
+function toggleCommitDetails(sha: string): void {
+	expandedSha = expandedSha === sha ? undefined : sha;
+	renderCommitDetails();
+	if (!expandedSha) {
+		return;
+	}
+	document.getElementById(DETAILS_ID)?.scrollIntoView({ block: 'nearest' });
+	if (!commitMessages.has(sha)) {
+		vscodeApi.postMessage({ type: 'getCommitMessage', sha });
+	}
 }
 
 /** Appends a page onto what's already rendered, rather than rebuilding the whole (potentially large,
@@ -264,6 +330,7 @@ function applyFilterAndRender(): void {
 	selectedRowEl = undefined;
 	commitsEl.innerHTML =
 		matches.length === 0 ? '<div class="empty">No matches in loaded commits.</div>' : matches.map(commitRowHtml).join('');
+	renderCommitDetails();
 	if (selectedSha) {
 		highlightSelectedCommit(selectedSha);
 	}
@@ -360,8 +427,29 @@ commitsEl.addEventListener('click', event => {
 	}
 	activePane = 'commits';
 	const row = (event.target as HTMLElement).closest<HTMLElement>('.row[data-sha]');
+	if (!row) {
+		return;
+	}
+	// The first click of a double-click already selected this row -- selecting it again on the
+	// second would just reload the same file list.
+	if (event.detail > 1 && row.dataset.sha === selectedSha) {
+		return;
+	}
+	selectCommit(row.dataset.sha!);
+});
+
+commitsEl.addEventListener('dblclick', event => {
+	const row = (event.target as HTMLElement).closest<HTMLElement>('.row[data-sha]');
 	if (row) {
-		selectCommit(row.dataset.sha!);
+		toggleCommitDetails(row.dataset.sha!);
+	}
+});
+
+// Keeps a double-click on a row from also selecting the word under the pointer. Scoped to rows, so
+// text in an open details panel can still be selected and copied.
+commitsEl.addEventListener('mousedown', event => {
+	if (event.detail > 1 && (event.target as HTMLElement).closest('.row[data-sha]')) {
+		event.preventDefault();
 	}
 });
 
@@ -619,6 +707,11 @@ window.addEventListener('message', event => {
 			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount);
 			updateGitHubButton(message.githubUrl);
 			commitsEl.scrollTop = 0;
+			// A background reload keeps an open commit open if it's still in the list; a branch
+			// switch (or an amend/reset that replaced it) closes it.
+			if (expandedSha && !message.commits.some(c => c.hash === expandedSha)) {
+				expandedSha = undefined;
+			}
 			renderCommits(message.commits);
 			if (message.commits.length === 0) {
 				filesEl.innerHTML = '<div class="empty">Select a commit to see its changed files.</div>';
@@ -670,6 +763,14 @@ window.addEventListener('message', event => {
 				renderFiles(message.files);
 			}
 			break;
+		case 'commitMessage': {
+			commitMessages.set(message.sha, message.message);
+			const messageEl = message.sha === expandedSha ? document.querySelector(`#${DETAILS_ID} .commit-details-message`) : null;
+			if (messageEl) {
+				messageEl.textContent = message.message;
+			}
+			break;
+		}
 		case 'error':
 			commitsEl.innerHTML = `<div class="empty">Error: ${escapeHtml(message.message)}</div>`;
 			break;

@@ -46,11 +46,16 @@ export type HostMessage =
 	 * webview knows the "Search older commits" affordance's state is now accurate. */
 	| { type: 'searchLoadFinished'; totalLoaded: number; hasMore: boolean }
 	| { type: 'files'; sha: string; files: ChangedFile[] }
+	/** Reply to 'getCommitMessage' -- the commit's full message, subject and body. */
+	| { type: 'commitMessage'; sha: string; message: string }
 	| { type: 'error'; message: string };
 
 export type WebviewMessage =
 	| { type: 'ready' }
 	| { type: 'selectCommit'; sha: string }
+	/** A commit row was double-clicked open -- its log entry only carries the subject line, so the
+	 * full message is fetched separately for the expanded details. */
+	| { type: 'getCommitMessage'; sha: string }
 	| { type: 'openDiff'; sha: string; file: ChangedFile }
 	| { type: 'setSplit'; commitsPercent: number }
 	/** `remote` is only ever set for the Push button -- it's the toolbar dropdown's current selection,
