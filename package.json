@@ -222,6 +222,10 @@
         "title": "Copy Relative Path"
       },
       {
+        "command": "ggit.showFileHistory",
+        "title": "Show File History"
+      },
+      {
         "command": "ggit.copyPath",
         "title": "Copy Path"
       },
@@ -411,6 +415,11 @@
       ],
       "view/item/context": [
         {
+          "command": "ggit.showFileHistory",
+          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
+          "group": "0_history@1"
+        },
+        {
           "command": "ggit.stashSelectedFiles",
           "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "1_modification"
@@ -517,6 +526,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "ggit.showFileHistory",
+          "when": "false"
+        },
         {
           "command": "ggit.createTagFrom",
           "when": "false"

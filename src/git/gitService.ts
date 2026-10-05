@@ -22,6 +22,8 @@ import {
 
 const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const FIELD_SEP = '\x1f';
+/** Starts each commit's record in getFileLog, where --name-status lines follow the fields line. */
+const RECORD_SEP = '\x1e';
 const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(FIELD_SEP);
 const STASH_FORMAT = ['%gd', '%H', '%s', '%aI'].join(FIELD_SEP);
 
@@ -534,20 +536,58 @@ export class GitService {
 		const lines = out.split('\n');
 		const hasMore = lines.length > limit;
 		const pageLines = hasMore ? lines.slice(0, limit) : lines;
-		const commits = pageLines.map(line => {
-			const [hash, parents, authorName, authorEmail, date, message, refsField] = line.split(FIELD_SEP);
-			return {
-				hash,
-				parentHashes: parents ? parents.split(' ').filter(Boolean) : [],
-				authorName,
-				authorEmail,
-				date,
-				message,
-				refs: parseRefs(refsField ?? ''),
-				onBranch: true,
-			};
-		});
+		const commits = pageLines.map(parseLogLine);
 		this.logger?.(`getLog(${branchName}, skip=${skip}, limit=${limit}): ${commits.length} commit(s), hasMore=${hasMore}`);
+		return { commits, hasMore };
+	}
+
+	/** getLog narrowed to the commits that touched `filePath`, following it back through renames --
+	 * each commit's `filePath` is what the file was called as of that commit, from --name-status
+	 * (just the one file's line, since the pathspec limits the diff too).
+	 *
+	 * Two flags matter beyond getLog's: --follow ignores --skip (verified -- it silently returns the
+	 * first page again), so this reads everything up to the end of the requested page and drops the
+	 * earlier commits itself; one file's history is short enough next to a whole branch's that
+	 * re-reading them per page is cheap. And --literal-pathspecs, or a name like "f[1].ts" is a glob
+	 * that also matches "f1.ts". A file with no commits yet (new, untracked) just gets an empty list. */
+	async getFileLog(
+		branchName: string,
+		filePath: string,
+		options: { skip: number; limit: number }
+	): Promise<{ commits: CommitInfo[]; hasMore: boolean }> {
+		const { skip, limit } = options;
+		const out = await this.time(`getFileLog(${branchName}, ${filePath}, skip=${skip}, limit=${limit}): git log --follow`, () =>
+			this.git.raw([
+				'--literal-pathspecs',
+				'log',
+				branchName,
+				'--follow',
+				`--max-count=${skip + limit + 1}`,
+				'--name-status',
+				`--pretty=format:${RECORD_SEP}${LOG_FORMAT}`,
+				'--decorate=short',
+				'--',
+				filePath,
+			])
+		);
+		const records = out.split(RECORD_SEP).filter(record => record.trim());
+		const commits: CommitInfo[] = [];
+		// Carried newest-to-oldest so a commit with no status line for the file (a merge -- git shows no
+		// diff for those by default) inherits the name from the commit after it.
+		let pathAtCommit = filePath;
+		records.slice(0, skip + limit).forEach((record, index) => {
+			const [header, ...statusLines] = record.split('\n');
+			// "M\tpath", or "R100\told\tnew" at the commit that renamed it -- the file is the last field.
+			const status = statusLines.map(line => line.trim()).filter(Boolean).pop();
+			if (status) {
+				pathAtCommit = status.split('\t').pop()!;
+			}
+			if (index >= skip) {
+				commits.push({ ...parseLogLine(header), filePath: pathAtCommit });
+			}
+		});
+		const hasMore = records.length > skip + limit;
+		this.logger?.(`getFileLog(${branchName}, ${filePath}, skip=${skip}, limit=${limit}): ${commits.length} commit(s), hasMore=${hasMore}`);
 		return { commits, hasMore };
 	}
 
@@ -1241,6 +1281,21 @@ export function stripRemotePrefix(remoteBranchName: string): string {
 }
 
 /** Parses `%D` ref-decoration output, e.g. "HEAD -> main, origin/main, origin/HEAD, tag: v1.0". */
+/** One LOG_FORMAT line -- shared by getLog and getFileLog. */
+function parseLogLine(line: string): CommitInfo {
+	const [hash, parents, authorName, authorEmail, date, message, refsField] = line.split(FIELD_SEP);
+	return {
+		hash,
+		parentHashes: parents ? parents.split(' ').filter(Boolean) : [],
+		authorName,
+		authorEmail,
+		date,
+		message,
+		refs: parseRefs(refsField ?? ''),
+		onBranch: true,
+	};
+}
+
 function parseRefs(raw: string): RefBadge[] {
 	if (!raw) {
 		return [];

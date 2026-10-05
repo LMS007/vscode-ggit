@@ -37,6 +37,9 @@ export type HostMessage =
 			 * their graph dot and line turn green. Covers later 'moreCommits' pages too, not just this
 			 * first one. */
 			unpushed: string[];
+			/** Set when this is one file's history (see BranchHistoryPanel's filePath) -- shown as a
+			 * removable filter chip above the list. */
+			filePath: string | undefined;
 	  }
 	/** A subsequent page, requested via 'loadMoreCommits' -- appended to, not replacing, what's
 	 * already rendered. */
@@ -78,6 +81,8 @@ export type WebviewMessage =
 	/** The commits pane was scrolled near its bottom and there's more to fetch (see 'commits'.hasMore
 	 * / 'moreCommits'.hasMore). */
 	| { type: 'loadMoreCommits' }
+	/** The file filter chip's × -- back to the whole branch's history. */
+	| { type: 'clearFileFilter' }
 	/** The file-list pane's open-file icon was clicked -- opens the file's current working-tree copy
 	 * for editing (not a historical revision, which wouldn't be editable). */
 	| { type: 'openFileForEditing'; path: string }

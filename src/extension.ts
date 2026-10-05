@@ -633,6 +633,17 @@ export function activate(context: vscode.ExtensionContext): void {
 		// Relative to the repo root (== this extension's one workspace folder, see the top of
 		// activate()) with OS-native separators -- file.path itself is always "/"-separated (that's
 		// what git prints), which would be a lie to paste into a Windows path field as-is.
+		// The History tab narrowed to this file, on the checked-out branch -- the one the Working Copy
+		// file belongs to. Detached HEAD has no branch name, so "HEAD" itself stands in.
+		vscode.commands.registerCommand('ggit.showFileHistory', async (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
+			const file = resolveSingleWorkingChangeFile(node, selectedFiles);
+			if (!file) {
+				return;
+			}
+			const branch = (await gitService.getCurrentBranch()) ?? 'HEAD';
+			BranchHistoryPanel.createOrShow(context, gitService, branch, file.path);
+		}),
+
 		vscode.commands.registerCommand('ggit.copyRelativePath', (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
 			const file = resolveSingleWorkingChangeFile(node, selectedFiles);
 			if (!file) {

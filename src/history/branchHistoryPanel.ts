@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { openDiffForFile } from '../diff/openDiff';
 import { resetHeadToCommit } from '../git/gitActions';
 import { GitService } from '../git/gitService';
+import { CommitInfo } from '../git/types';
 import { HostMessage, WebviewMessage } from './protocol';
 
 /** Shared across every History panel instance/reload — not scoped to a single webview session. */
@@ -85,13 +86,16 @@ export class BranchHistoryPanel {
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
 		private readonly gitService: GitService,
-		branchName: string
+		branchName: string,
+		/** Set when showing one file's history on the branch rather than all of it -- see
+		 * GitService.getFileLog. Opening any branch's history clears it again. */
+		private filePath: string | undefined
 	) {
 		this.branchName = branchName;
 		this.selectedRemote = context.globalState.get<string>(SELECTED_REMOTE_KEY);
 		this.panel = vscode.window.createWebviewPanel(
 			'ggitBranchHistory',
-			`History: ${branchName}`,
+			this.title(),
 			// preserveFocus: true — opening this from a tree-item click shouldn't steal focus
 			// away from the tree, or arrow-key navigation there breaks immediately after a click.
 			{ viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
@@ -116,12 +120,14 @@ export class BranchHistoryPanel {
 		);
 	}
 
-	static createOrShow(context: vscode.ExtensionContext, gitService: GitService, branchName: string): void {
+	/** `filePath` narrows it to the commits that touched that file (repo-relative); leaving it out
+	 * shows the whole branch, including when the open tab was showing a file's history. */
+	static createOrShow(context: vscode.ExtensionContext, gitService: GitService, branchName: string, filePath?: string): void {
 		if (BranchHistoryPanel.current) {
-			BranchHistoryPanel.current.showBranch(branchName);
+			BranchHistoryPanel.current.showBranch(branchName, filePath);
 			return;
 		}
-		BranchHistoryPanel.current = new BranchHistoryPanel(context, gitService, branchName);
+		BranchHistoryPanel.current = new BranchHistoryPanel(context, gitService, branchName, filePath);
 	}
 
 	/** Reloads the currently open history tab, if any — call after a successful fetch/pull.
@@ -142,11 +148,23 @@ export class BranchHistoryPanel {
 		}
 	}
 
-	private showBranch(branchName: string): void {
+	private showBranch(branchName: string, filePath: string | undefined): void {
 		this.branchName = branchName;
-		this.panel.title = `History: ${branchName}`;
+		this.filePath = filePath;
+		this.panel.title = this.title();
 		this.panel.reveal(vscode.ViewColumn.Active, true);
 		void this.loadCommits(true);
+	}
+
+	private title(): string {
+		return `History: ${this.filePath ? path.posix.basename(this.filePath) : this.branchName}`;
+	}
+
+	private fetchLogPage(skip: number): Promise<{ commits: CommitInfo[]; hasMore: boolean }> {
+		const options = { skip, limit: COMMITS_PAGE_SIZE };
+		return this.filePath
+			? this.gitService.getFileLog(this.branchName, this.filePath, options)
+			: this.gitService.getLog(this.branchName, options);
 	}
 
 	private async loadCommits(focusLatest: boolean): Promise<void> {
@@ -155,7 +173,7 @@ export class BranchHistoryPanel {
 		}
 		try {
 			const [{ commits, hasMore }, aheadCount, upstream, remotes, githubUrl, unpushed] = await Promise.all([
-				this.gitService.getLog(this.branchName, { skip: 0, limit: COMMITS_PAGE_SIZE }),
+				this.fetchLogPage(0),
 				this.gitService.getAheadCount(this.branchName),
 				this.gitService.getUpstreamBranch(this.branchName),
 				this.gitService.listRemotes(),
@@ -189,6 +207,7 @@ export class BranchHistoryPanel {
 				selectedRemote: effectiveRemote,
 				githubUrl,
 				unpushed,
+				filePath: this.filePath,
 			});
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
@@ -201,15 +220,13 @@ export class BranchHistoryPanel {
 	 * search-triggered) so both go through identical bookkeeping instead of duplicating it. */
 	private async fetchNextPage(): Promise<boolean> {
 		const branchAtRequestTime = this.branchName;
+		const fileAtRequestTime = this.filePath;
 		try {
-			const { commits, hasMore } = await this.gitService.getLog(this.branchName, {
-				skip: this.commitsLoaded,
-				limit: COMMITS_PAGE_SIZE,
-			});
-			if (branchAtRequestTime !== this.branchName) {
-				// A branch switch raced in while this was in flight -- the new branch's own loadCommits
-				// has already (or is about to) reset all this state, so just drop the stale result rather
-				// than appending it onto the wrong branch's list.
+			const { commits, hasMore } = await this.fetchLogPage(this.commitsLoaded);
+			if (branchAtRequestTime !== this.branchName || fileAtRequestTime !== this.filePath) {
+				// A branch (or file) switch raced in while this was in flight -- the new one's own
+				// loadCommits has already (or is about to) reset all this state, so just drop the stale
+				// result rather than appending it onto the wrong list.
 				return false;
 			}
 			this.commitsLoaded += commits.length;
@@ -278,6 +295,11 @@ export class BranchHistoryPanel {
 				break;
 			case 'loadMoreCommits':
 				await this.loadMoreCommits();
+				break;
+			case 'clearFileFilter':
+				this.filePath = undefined;
+				this.panel.title = this.title();
+				await this.loadCommits(false);
 				break;
 			case 'ensureCommitsForSearch':
 				await this.ensureCommitsForSearch(msg.minCount);
@@ -649,6 +671,50 @@ export class BranchHistoryPanel {
 		.icon-btn .codicon {
 			font-size: 14px;
 		}
+		/* Shown while the tab is narrowed to one file's history -- its × goes back to the whole branch. */
+		#fileFilter {
+			flex: 0 1 auto;
+			min-width: 0;
+			max-width: 45%;
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			padding: 2px 2px 2px 8px;
+			border-radius: 4px;
+			background-color: var(--vscode-badge-background, #3b82f6);
+			color: var(--vscode-badge-foreground, #ffffff);
+		}
+		#fileFilter[hidden] {
+			display: none;
+		}
+		#fileFilterPath {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			direction: rtl;
+			text-align: left;
+		}
+		#fileFilterClear {
+			flex: 0 0 auto;
+			width: 18px;
+			height: 18px;
+			padding: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			border: none;
+			border-radius: 3px;
+			background: transparent;
+			color: inherit;
+			cursor: pointer;
+		}
+		#fileFilterClear:hover {
+			background-color: rgba(255, 255, 255, 0.2);
+		}
+		/* In a file's history, that file's row in each commit's file list -- listed first and bold. */
+		.file-row.tracked-file .file-name {
+			font-weight: 600;
+		}
 		.load-older-row {
 			display: flex;
 			justify-content: center;
@@ -1015,6 +1081,13 @@ export class BranchHistoryPanel {
 <body>
 	<div id="toolbar">${toolbarButtons}</div>
 	<div id="searchBar">
+		<span id="fileFilter" hidden>
+			<span class="codicon codicon-file"></span>
+			<span id="fileFilterPath"></span>
+			<button id="fileFilterClear" title="Show all commits on the branch" aria-label="Show all commits on the branch">
+				<span class="codicon codicon-close"></span>
+			</button>
+		</span>
 		<span class="codicon codicon-search"></span>
 		<input id="searchInput" type="text" autocomplete="off" spellcheck="false" placeholder="Search commits by author or message…" />
 		<span id="searchStatus"></span>

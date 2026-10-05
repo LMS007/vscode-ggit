@@ -100,6 +100,22 @@ githubButtonEl?.addEventListener('click', () => {
 const searchInput = document.getElementById('searchInput') as HTMLInputElement;
 const searchStatusEl = document.getElementById('searchStatus')!;
 const searchClearButton = document.getElementById('searchClearButton') as HTMLButtonElement;
+const fileFilterEl = document.getElementById('fileFilter')!;
+const fileFilterPathEl = document.getElementById('fileFilterPath')!;
+const fileFilterClearButton = document.getElementById('fileFilterClear')!;
+
+// The file this tab is narrowed to, from the latest 'commits' message -- undefined for a whole branch.
+let fileFilter: string | undefined;
+
+function renderFileFilter(): void {
+	fileFilterEl.hidden = !fileFilter;
+	// Right-to-left so a long path ellipsizes its front and the file name itself stays visible; the
+	// LRM marks keep punctuation at either end (".github/...") from being flipped to the other side.
+	fileFilterPathEl.textContent = fileFilter ? `‎${fileFilter}‎` : '';
+	fileFilterEl.title = fileFilter ? `Only commits that touched ${fileFilter}` : '';
+}
+
+fileFilterClearButton.addEventListener('click', () => vscodeApi.postMessage({ type: 'clearFileFilter' }));
 
 /** See plans/commit-search-plan.md -- verified against a real large repo that this is cheap
  * (git log scales near-linearly, ~35-50ms for 500-2000 commits), so there's little reason to
@@ -228,7 +244,9 @@ function renderCommits(commits: CommitInfo[]): void {
 	currentCommits = commits;
 	selectedRowEl = undefined;
 	if (commits.length === 0) {
-		commitsEl.innerHTML = '<div class="empty">No commits on this branch.</div>';
+		commitsEl.innerHTML = fileFilter
+			? '<div class="empty">No commits on this branch have touched this file yet.</div>'
+			: '<div class="empty">No commits on this branch.</div>';
 		return;
 	}
 	commitsEl.innerHTML = commits.map(commitRowHtml).join('');
@@ -419,7 +437,12 @@ function renderFileStats(f: ChangedFile): string {
 	return parts.join('');
 }
 
-function renderFiles(files: ChangedFile[]): void {
+function renderFiles(commitFiles: ChangedFile[]): void {
+	// In a file's history, that file goes first -- by its name as of this commit, which is what
+	// getFileLog records per commit, since it differs from today's before a rename.
+	const trackedPath = fileFilter ? currentCommits.find(c => c.hash === selectedSha)?.filePath : undefined;
+	const tracked = commitFiles.find(f => f.path === trackedPath);
+	const files = tracked ? [tracked, ...commitFiles.filter(f => f !== tracked)] : commitFiles;
 	currentFiles = files;
 	selectedFileIndex = -1;
 	if (files.length === 0) {
@@ -429,7 +452,7 @@ function renderFiles(files: ChangedFile[]): void {
 	filesEl.innerHTML = files
 		.map(
 			(f, i) =>
-				`<div class="row file-row" data-index="${i}">
+				`<div class="row file-row${f === tracked ? ' tracked-file' : ''}" data-index="${i}">
 					<span class="file-status status-${f.status}">${f.status}</span>
 					<span class="file-name">${escapeHtml(f.path)}</span>
 					<span class="file-stats">${renderFileStats(f)}</span>
@@ -739,6 +762,8 @@ window.addEventListener('message', event => {
 			searchInput.value = '';
 			searchStatusEl.textContent = '';
 			searchClearButton.hidden = true;
+			fileFilter = message.filePath;
+			renderFileFilter();
 			renderRemoteSelect(message.remotes, message.selectedRemote);
 			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount);
 			updateGitHubButton(message.githubUrl);

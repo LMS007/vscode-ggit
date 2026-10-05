@@ -34,6 +34,9 @@ export interface CommitInfo {
 	/** False for a commit that's only reachable from the branch's upstream, not the branch itself
 	 * yet (i.e. it's "behind") — shown dimmed rather than left out, same as Tower does. */
 	onBranch: boolean;
+	/** Only set in a file's history (see GitService.getFileLog): the file's path as of this commit,
+	 * which differs from today's for commits before a rename. */
+	filePath?: string;
 }
 
 export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | '?' | 'U';
