@@ -1280,7 +1280,6 @@ export function stripRemotePrefix(remoteBranchName: string): string {
 	return splitRemoteBranch(remoteBranchName).branch;
 }
 
-/** Parses `%D` ref-decoration output, e.g. "HEAD -> main, origin/main, origin/HEAD, tag: v1.0". */
 /** One LOG_FORMAT line -- shared by getLog and getFileLog. */
 function parseLogLine(line: string): CommitInfo {
 	const [hash, parents, authorName, authorEmail, date, message, refsField] = line.split(FIELD_SEP);
@@ -1296,6 +1295,7 @@ function parseLogLine(line: string): CommitInfo {
 	};
 }
 
+/** Parses `%D` ref-decoration output, e.g. "HEAD -> main, origin/main, origin/HEAD, tag: v1.0". */
 function parseRefs(raw: string): RefBadge[] {
 	if (!raw) {
 		return [];
