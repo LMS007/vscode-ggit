@@ -60,6 +60,10 @@ const TOOLBAR_COMMANDS = new Set(TOOLBAR_BUTTONS.map(b => b.command));
 
 export class BranchHistoryPanel {
 	private static current: BranchHistoryPanel | undefined;
+	/** The latest answer from the Tags view's remote check (see TagsTreeProvider.onDidChangeRemoteTags)
+	 * -- kept here, not fetched, so marking local-only tag badges never costs a network call of its own.
+	 * Static so a panel opened later still gets the last answer. */
+	private static remoteTagNames: string[] | undefined;
 
 	private readonly panel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
@@ -126,6 +130,16 @@ export class BranchHistoryPanel {
 	 * user's attention away from a commit they might be actively reviewing. */
 	static refreshIfOpen(): void {
 		void BranchHistoryPanel.current?.loadCommits(false);
+	}
+
+	/** Updates the open tab's tag badges in place rather than reloading its commits -- a remote check
+	 * finishing changes nothing but which tags are local-only. */
+	static setRemoteTags(names: Set<string> | undefined): void {
+		BranchHistoryPanel.remoteTagNames = names && [...names];
+		const current = BranchHistoryPanel.current;
+		if (current?.ready) {
+			current.post({ type: 'remoteTags', names: BranchHistoryPanel.remoteTagNames });
+		}
 	}
 
 	private showBranch(branchName: string): void {
@@ -259,6 +273,7 @@ export class BranchHistoryPanel {
 		switch (msg.type) {
 			case 'ready':
 				this.ready = true;
+				this.post({ type: 'remoteTags', names: BranchHistoryPanel.remoteTagNames });
 				await this.loadCommits(true);
 				break;
 			case 'loadMoreCommits':
@@ -902,6 +917,10 @@ export class BranchHistoryPanel {
 		.ref-badge-tag {
 			background-color: var(--vscode-gitDecoration-addedResourceForeground, #4b4);
 			color: var(--vscode-editor-background, #1e1e1e);
+		}
+		/* A tag no remote has yet -- the same purple as its icon in the Tags view. */
+		.ref-badge-tag.local-only {
+			background-color: var(--vscode-charts-purple, #8250df);
 		}
 		.file-status {
 			display: inline-block;

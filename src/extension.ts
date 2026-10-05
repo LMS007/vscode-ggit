@@ -115,6 +115,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	tagsProvider.onDidChangeRemoteStatus(status => {
 		tagsView.description = status ?? workspaceFolder.name;
 	});
+	tagsProvider.onDidChangeRemoteTags(names => BranchHistoryPanel.setRemoteTags(names));
 
 	// Multi-select is for bulk delete only — Apply always acts on just the row you right-clicked,
 	// ignoring the rest of the selection (see ggit.applyStashItem below).

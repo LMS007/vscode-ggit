@@ -168,8 +168,40 @@ function escapeHtml(text: string): string {
 		.replace(/"/g, '&quot;');
 }
 
+// Every tag name the remotes have (see 'remoteTags') -- undefined until a remote's been checked.
+let remoteTagNames: Set<string> | undefined;
+
+function isLocalOnlyTag(name: string): boolean {
+	return remoteTagNames !== undefined && !remoteTagNames.has(name);
+}
+
+const LOCAL_ONLY_TAG_TITLE = 'Not on any remote yet -- publish it from the Tags view';
+
 function renderRefBadges(refs: CommitInfo['refs']): string {
-	return refs.map(r => `<span class="ref-badge ref-badge-${r.kind}">${escapeHtml(r.name)}</span>`).join('');
+	return refs
+		.map(r => {
+			if (r.kind === 'tag') {
+				const localOnly = isLocalOnlyTag(r.name);
+				return `<span class="ref-badge ref-badge-tag${localOnly ? ' local-only' : ''}" data-tag="${escapeHtml(r.name)}"${localOnly ? ` title="${LOCAL_ONLY_TAG_TITLE}"` : ''}>${escapeHtml(r.name)}</span>`;
+			}
+			return `<span class="ref-badge ref-badge-${r.kind}">${escapeHtml(r.name)}</span>`;
+		})
+		.join('');
+}
+
+/** Re-marks the tag badges already on screen -- a new remote answer only changes which ones are
+ * local-only, so there's no need to re-render the rows (and lose scroll position or an open
+ * details panel) to show it. */
+function updateTagBadges(): void {
+	commitsEl.querySelectorAll<HTMLElement>('.ref-badge-tag[data-tag]').forEach(badge => {
+		const localOnly = isLocalOnlyTag(badge.dataset.tag!);
+		badge.classList.toggle('local-only', localOnly);
+		if (localOnly) {
+			badge.title = LOCAL_ONLY_TAG_TITLE;
+		} else {
+			badge.removeAttribute('title');
+		}
+	});
 }
 
 function commitRowHtml(c: CommitInfo): string {
@@ -766,6 +798,10 @@ window.addEventListener('message', event => {
 			if (message.sha === selectedSha) {
 				renderFiles(message.files);
 			}
+			break;
+		case 'remoteTags':
+			remoteTagNames = message.names && new Set(message.names);
+			updateTagBadges();
 			break;
 		case 'commitMessage': {
 			commitMessages.set(message.sha, message.message);

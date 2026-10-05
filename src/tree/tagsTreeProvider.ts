@@ -31,6 +31,11 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 	/** A short status for the view's header while remotes are being checked or couldn't be reached --
 	 * undefined once there's nothing to say. */
 	readonly onDidChangeRemoteStatus = this._onDidChangeRemoteStatus.event;
+	private readonly _onDidChangeRemoteTags = new vscode.EventEmitter<Set<string> | undefined>();
+	/** Every tag name any reachable remote has, each time the remotes answer -- undefined when no
+	 * remote could be checked (none configured, or none reachable), meaning "unknown", not "none".
+	 * Lets the History tab mark local-only tags without asking the remotes a second time. */
+	readonly onDidChangeRemoteTags = this._onDidChangeRemoteTags.event;
 
 	private remoteTags = new Map<string, Map<string, RemoteTagInfo>>();
 	private remoteLoadStarted = false;
@@ -52,6 +57,7 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 			if (remotes.length === 0) {
 				this.remoteTags = new Map();
 				this._onDidChangeRemoteStatus.fire(undefined);
+				this._onDidChangeRemoteTags.fire(undefined);
 				this.refresh();
 				return;
 			}
@@ -72,6 +78,9 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 			this.remoteTags = new Map(results.filter(r => r.tags).map(r => [r.remote, r.tags!]));
 			const unreachable = results.filter(r => !r.tags).map(r => r.remote);
 			this._onDidChangeRemoteStatus.fire(unreachable.length > 0 ? `Couldn't reach ${unreachable.join(', ')}` : undefined);
+			this._onDidChangeRemoteTags.fire(
+				this.remoteTags.size > 0 ? new Set([...this.remoteTags.values()].flatMap(tags => [...tags.keys()])) : undefined
+			);
 			this.refresh();
 		})();
 	}

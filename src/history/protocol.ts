@@ -50,6 +50,9 @@ export type HostMessage =
 	 * webview knows the "Search older commits" affordance's state is now accurate. */
 	| { type: 'searchLoadFinished'; totalLoaded: number; hasMore: boolean }
 	| { type: 'files'; sha: string; files: ChangedFile[] }
+	/** Every tag name the remotes have, from the Tags view's last check -- any tag badge not in it is
+	 * local-only and shown purple. Undefined means no remote could be checked, so no badge is marked. */
+	| { type: 'remoteTags'; names: string[] | undefined }
 	/** Reply to 'getCommitMessage' -- the commit's full message, subject and body. */
 	| { type: 'commitMessage'; sha: string; message: string }
 	| { type: 'error'; message: string };
