@@ -33,6 +33,10 @@ export type HostMessage =
 			 * hides the toolbar's "View on GitHub" button entirely, whether that's because the branch
 			 * isn't published yet or its remote just isn't GitHub. */
 			githubUrl: string | undefined;
+			/** Hashes of this branch's not-yet-pushed commits (see GitService.getUnpushedCommits) --
+			 * their graph dot and line turn green. Covers later 'moreCommits' pages too, not just this
+			 * first one. */
+			unpushed: string[];
 	  }
 	/** A subsequent page, requested via 'loadMoreCommits' -- appended to, not replacing, what's
 	 * already rendered. */

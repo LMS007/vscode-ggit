@@ -156,6 +156,9 @@ let expandedSha: string | undefined;
 // Full messages already fetched via 'getCommitMessage', so re-opening a commit (or the list
 // re-rendering under an open one) doesn't need another round trip.
 const commitMessages = new Map<string, string>();
+// From the latest 'commits' message -- a set, not a per-commit flag, since later 'moreCommits' pages
+// are colored from it too.
+let unpushedShas = new Set<string>();
 
 function escapeHtml(text: string): string {
 	return text
@@ -170,7 +173,7 @@ function renderRefBadges(refs: CommitInfo['refs']): string {
 }
 
 function commitRowHtml(c: CommitInfo): string {
-	return `<div class="commit-row-wrapper${c.onBranch ? '' : ' not-on-branch'}">
+	return `<div class="commit-row-wrapper${c.onBranch ? '' : ' not-on-branch'}${unpushedShas.has(c.hash) ? ' unpushed' : ''}">
 			<div class="commit-graph">
 				<div class="commit-graph-line"></div>
 				<div class="commit-graph-dot"></div>
@@ -695,6 +698,7 @@ window.addEventListener('message', event => {
 	switch (message.type) {
 		case 'commits': {
 			hasMoreCommits = message.hasMore;
+			unpushedShas = new Set(message.unpushed);
 			loadingMoreCommits = false;
 			bulkLoadingForSearch = false;
 			// A fresh load (branch switch/open/reveal) starts over -- carrying a search across to an

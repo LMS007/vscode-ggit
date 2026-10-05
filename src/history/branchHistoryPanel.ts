@@ -18,6 +18,11 @@ const SELECTED_REMOTE_KEY = 'ggit.historyPanel.selectedRemote';
  * deeply-diverged branch's history stays fast; large enough that scrolling doesn't feel choppy. */
 const COMMITS_PAGE_SIZE = 100;
 
+/** Most unpushed-commit hashes handed to the webview for coloring -- far past any real branch's
+ * ahead count; just a backstop for a remote that's been added but never pushed to, where every
+ * commit in the history counts as unpushed. */
+const UNPUSHED_COMMITS_LIMIT = 5000;
+
 /** Mirrors the Branches toolbar/sidebar Actions view — these always act on the currently checked-out
  * branch, not necessarily the one this panel happens to be showing history for. The trailing three
  * (stash apply/save, commit) mirror Working Copy's own toolbar buttons instead — same commands, same
@@ -135,12 +140,13 @@ export class BranchHistoryPanel {
 			return;
 		}
 		try {
-			const [{ commits, hasMore }, aheadCount, upstream, remotes, githubUrl] = await Promise.all([
+			const [{ commits, hasMore }, aheadCount, upstream, remotes, githubUrl, unpushed] = await Promise.all([
 				this.gitService.getLog(this.branchName, { skip: 0, limit: COMMITS_PAGE_SIZE }),
 				this.gitService.getAheadCount(this.branchName),
 				this.gitService.getUpstreamBranch(this.branchName),
 				this.gitService.listRemotes(),
 				this.gitService.getGitHubBranchUrl(this.branchName),
+				this.gitService.getUnpushedCommits(this.branchName, UNPUSHED_COMMITS_LIMIT),
 			]);
 			this.commitsLoaded = commits.length;
 			this.hasMoreCommits = hasMore;
@@ -168,6 +174,7 @@ export class BranchHistoryPanel {
 				remotes,
 				selectedRemote: effectiveRemote,
 				githubUrl,
+				unpushed,
 			});
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
@@ -724,6 +731,35 @@ export class BranchHistoryPanel {
 			background-color: var(--vscode-editor-background, #1e1e1e);
 			border: 2px solid var(--vscode-charts-blue, #3b82f6);
 			z-index: 1;
+		}
+		/* A commit that hasn't been pushed yet (see 'commits'.unpushed) is green -- the same "ready to
+		 * push" signal as the Push button -- and blue otherwise. Where neighbors differ, the line
+		 * between their dots fades from one color to the other over that whole span, so each row also
+		 * needs the colors of the rows above and below it -- its own color where there's no commit row
+		 * there (the list's ends, or the loading/"Search older" rows). */
+		.commit-row-wrapper {
+			--graph-color: var(--vscode-charts-blue, #3b82f6);
+			--graph-above: var(--graph-color);
+			--graph-below: var(--graph-color);
+		}
+		.commit-row-wrapper.unpushed { --graph-color: var(--vscode-charts-green, #1f883d); }
+		.commit-row-wrapper + .commit-row-wrapper { --graph-above: var(--vscode-charts-blue, #3b82f6); }
+		.commit-row-wrapper.unpushed + .commit-row-wrapper { --graph-above: var(--vscode-charts-green, #1f883d); }
+		.commit-row-wrapper:has(+ .commit-row-wrapper) { --graph-below: var(--vscode-charts-blue, #3b82f6); }
+		.commit-row-wrapper:has(+ .commit-row-wrapper.unpushed) { --graph-below: var(--vscode-charts-green, #1f883d); }
+		.commit-row-wrapper .commit-graph-dot { border-color: var(--graph-color); }
+		/* Each line runs the full row height with its dot at 50%, so stops past 0-100% are what land
+		 * each fade's midpoint exactly on the boundary between rows -- the upper row draws the first
+		 * half, the lower row the second. The list's first and last rows' lines start or end at the dot
+		 * instead (see :first-child/:last-child above), which shifts their stops. */
+		.commit-row-wrapper .commit-graph-line {
+			background: linear-gradient(var(--graph-above) -50%, var(--graph-color) 50%, var(--graph-below) 150%);
+		}
+		.commit-row-wrapper:first-child .commit-graph-line {
+			background: linear-gradient(var(--graph-color) 0%, var(--graph-below) 200%);
+		}
+		.commit-row-wrapper:last-child .commit-graph-line {
+			background: linear-gradient(var(--graph-above) -100%, var(--graph-color) 100%);
 		}
 		.commit-row {
 			display: flex;

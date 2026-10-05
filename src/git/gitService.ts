@@ -282,7 +282,13 @@ export class GitService {
 			return undefined;
 		}
 		try {
-			await this.git.raw(['rev-parse', '--verify', '--quiet', `${out}^{commit}`]);
+			// Judged by the hash it prints, not by whether raw() throws: with --quiet, an unresolvable ref
+			// exits non-zero with no output at all, and simple-git only rejects when there's stderr.
+			const sha = (await this.git.raw(['rev-parse', '--verify', '--quiet', `${out}^{commit}`])).trim();
+			if (!sha) {
+				this.logger?.(`getUpstreamBranch(${branchName}): upstream "${out}" does not resolve — treating as no upstream`);
+				return undefined;
+			}
 			this.logger?.(`getUpstreamBranch(${branchName}): upstream "${out}" verified OK`);
 			return out;
 		} catch (err) {
@@ -327,6 +333,33 @@ export class GitService {
 	async getAheadCount(branchName: string): Promise<number> {
 		const out = (await this.git.raw(['for-each-ref', '--format=%(upstream:track)', `refs/heads/${branchName}`])).trim();
 		return Number(out.match(/ahead (\d+)/)?.[1] ?? 0);
+	}
+
+	/** Hashes of `branchName`'s commits that haven't been pushed yet, newest first, at most `limit` of
+	 * them. With an upstream, that's everything not on it -- exactly what Push would send, so it agrees
+	 * with getAheadCount. Without one (never published), it's everything not on *any* remote-tracking
+	 * branch: a new branch cut from main with one commit gets just that commit, since the rest of its
+	 * history is already on origin/main. Empty when no remote is configured at all -- with nowhere to
+	 * push to, "unpushed" would just mean the entire history.
+	 *
+	 * Both walks stop at the merge base with what they're excluding, so they cost about what
+	 * getAheadCount's own ahead/behind computation already does. The exception is a branch sharing no
+	 * history with any remote branch, which walks its whole history -- the same unbounded case getLog
+	 * avoids, but only for that unusual shape of repo. */
+	async getUnpushedCommits(branchName: string, limit: number): Promise<string[]> {
+		const upstream = await this.getUpstreamBranch(branchName);
+		let range: string[];
+		if (upstream) {
+			range = [`${upstream}..${branchName}`];
+		} else if ((await this.git.getRemotes()).length > 0) {
+			range = [branchName, '--not', '--remotes'];
+		} else {
+			return [];
+		}
+		const out = await this.time(`getUnpushedCommits(${branchName}): rev-list ${range.join(' ')}`, () =>
+			this.git.raw(['rev-list', `--max-count=${limit}`, ...range, '--'])
+		);
+		return out.split('\n').filter(Boolean);
 	}
 
 	async fetchBranch(remoteBranchName: string): Promise<void> {
