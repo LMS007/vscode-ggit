@@ -27,8 +27,8 @@ import {
 	syncCurrentBranch,
 	unstageHunkAtCursor,
 } from './git/gitActions';
-import { GitService } from './git/gitService';
-import { BranchInfo, StashInfo, WorkingChangeFile } from './git/types';
+import { GitService, splitRemoteBranch } from './git/gitService';
+import { BranchInfo, RemoteBranchInfo, StashInfo, WorkingChangeFile } from './git/types';
 import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
 import { BranchesDragAndDropController } from './tree/branchesDragAndDrop';
@@ -359,6 +359,67 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand('ggit.addRemote', () => {
 			AddRemotePanel.createOrShow(context, gitService, refreshAll);
+		}),
+
+		// Refuses the remote's default branch outright -- GitHub rejects that delete itself, but a plain
+		// git server happily does it (verified against a bare repo). Only possible when the default is
+		// recorded locally (see getRemoteDefaultBranch); otherwise the confirmation is the only guard.
+		vscode.commands.registerCommand('ggit.deleteRemoteBranch', async (node?: BranchTreeNode<RemoteBranchInfo>) => {
+			if (node?.kind !== 'leaf') {
+				return;
+			}
+			const name = node.item.name;
+			const { remote, branch } = splitRemoteBranch(name);
+			let trackers: string[];
+			try {
+				const [defaultBranch, tracking] = await Promise.all([
+					gitService.getRemoteDefaultBranch(remote),
+					gitService.getLocalBranchesTracking(name),
+				]);
+				if (defaultBranch === name) {
+					void vscode.window.showWarningMessage(`GGit: "${branch}" is ${remote}'s default branch, so GGit won't delete it.`);
+					return;
+				}
+				trackers = tracking;
+			} catch (err) {
+				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				return;
+			}
+			const localNote =
+				trackers.length > 0
+					? `Your local ${trackers.map(t => `"${t}"`).join(', ')} tracks it. It stays, with all its commits, and can be published again later.`
+					: 'No local branch tracks it.';
+			const confirmed = await vscode.window.showWarningMessage(
+				`Delete "${branch}" from ${remote}?`,
+				{ modal: true, detail: `This deletes the branch on ${remote} for everyone. ${localNote}` },
+				'Delete Remote Branch'
+			);
+			if (confirmed !== 'Delete Remote Branch') {
+				return;
+			}
+			return runGitOperation(`Deleting ${name}…`, () => gitService.deleteRemoteBranch(name), refreshAll);
+		}),
+
+		vscode.commands.registerCommand('ggit.pruneRemoteBranches', async () => {
+			const pruned: string[] = [];
+			let finished = false;
+			await runGitOperation(
+				'Removing remote branches deleted on the remote…',
+				async () => {
+					for (const remote of await gitService.listRemotes()) {
+						pruned.push(...(await gitService.pruneRemote(remote)));
+					}
+					finished = true;
+				},
+				refreshAll
+			);
+			if (finished) {
+				void vscode.window.showInformationMessage(
+					pruned.length === 0
+						? 'GGit: Nothing to remove -- every remote branch listed still exists on its remote.'
+						: `GGit: Removed ${pruned.length} remote branch${pruned.length === 1 ? '' : 'es'} already deleted on the remote: ${pruned.join(', ')}`
+				);
+			}
 		}),
 
 		vscode.commands.registerCommand('ggit.createBranch', () => {

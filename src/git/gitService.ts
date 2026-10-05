@@ -212,6 +212,45 @@ export class GitService {
 			.map(name => ({ name }));
 	}
 
+	/** Deletes the branch on its remote (`git push --delete`) -- which also drops the local
+	 * remote-tracking ref, so it leaves the Remotes view without a separate prune. */
+	async deleteRemoteBranch(remoteBranchName: string): Promise<void> {
+		const { remote, branch } = splitRemoteBranch(remoteBranchName);
+		assertNotOptionLike(remote, 'remote name');
+		await this.git.raw(['push', '--delete', remote, `refs/heads/${branch}`]);
+	}
+
+	/** The remote's default branch as recorded locally (refs/remotes/<remote>/HEAD), e.g.
+	 * "origin/main" -- undefined when it was never recorded, which is normal for a remote added by
+	 * hand rather than cloned. --quiet makes a missing one exit silently, which raw() resolves as "". */
+	async getRemoteDefaultBranch(remote: string): Promise<string | undefined> {
+		assertNotOptionLike(remote, 'remote name');
+		const out = await this.git.raw(['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`]);
+		return out.trim() || undefined;
+	}
+
+	/** Local branches whose upstream is `remoteBranchName`. */
+	async getLocalBranchesTracking(remoteBranchName: string): Promise<string[]> {
+		const out = await this.git.raw(['for-each-ref', `--format=%(refname:short)${FIELD_SEP}%(upstream:short)`, 'refs/heads']);
+		return out
+			.split('\n')
+			.map(line => line.split(FIELD_SEP))
+			.filter(([, upstream]) => upstream === remoteBranchName)
+			.map(([name]) => name);
+	}
+
+	/** Drops remote-tracking branches whose branch is gone from `remote` -- deleted there, e.g. by
+	 * GitHub after a PR merges, but still listed here since nothing told this repo. `git remote prune`
+	 * asks the remote but fetches nothing. Returns the names it removed, from its "[pruned]" lines. */
+	async pruneRemote(remote: string): Promise<string[]> {
+		assertNotOptionLike(remote, 'remote name');
+		const out = await this.time(`pruneRemote(${remote})`, () => this.git.raw(['remote', 'prune', remote]));
+		return out
+			.split('\n')
+			.map(line => line.match(/\[pruned\]\s+(\S+)/)?.[1])
+			.filter((name): name is string => name !== undefined);
+	}
+
 	/** Every remote configured for this repo (e.g. ["origin", "upstream"]) -- drives the Remotes view
 	 * showing one top-level folder per remote instead of assuming "origin" is the only one. */
 	async listRemotes(): Promise<string[]> {

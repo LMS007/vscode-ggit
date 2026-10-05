@@ -156,6 +156,15 @@
         "icon": "$(add)"
       },
       {
+        "command": "ggit.pruneRemoteBranches",
+        "title": "GGit: Remove Branches Deleted on the Remote",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "ggit.deleteRemoteBranch",
+        "title": "Delete Remote Branch…"
+      },
+      {
         "command": "ggit.stageAll",
         "title": "GGit: Stage All",
         "icon": "$(add)"
@@ -378,9 +387,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "ggit.refresh",
+          "command": "ggit.pruneRemoteBranches",
           "when": "view == ggitRemotes",
           "group": "navigation@2"
+        },
+        {
+          "command": "ggit.refresh",
+          "when": "view == ggitRemotes",
+          "group": "navigation@3"
         },
         {
           "command": "ggit.refreshTags",
@@ -523,9 +537,18 @@
           "command": "ggit.deleteTag",
           "when": "view == ggitTags && viewItem =~ /^tag\\b/",
           "group": "9_delete@1"
+        },
+        {
+          "command": "ggit.deleteRemoteBranch",
+          "when": "view == ggitRemotes && viewItem == remoteBranch",
+          "group": "9_delete@1"
         }
       ],
       "commandPalette": [
+        {
+          "command": "ggit.deleteRemoteBranch",
+          "when": "false"
+        },
         {
           "command": "ggit.showFileHistory",
           "when": "false"
