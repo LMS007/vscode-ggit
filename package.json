@@ -38,7 +38,7 @@
         {
           "id": "ggitConflicts",
           "name": "Conflicts",
-          "when": "ggit.rebaseInProgress || ggit.mergeInProgress",
+          "when": "ggit.rebaseInProgress || ggit.mergeInProgress || ggit.pickInProgress",
           "initialSize": 2
         },
         {
@@ -138,6 +138,16 @@
       {
         "command": "ggit.mergeAbort",
         "title": "GGit: Abort Merge",
+        "icon": "$(circle-slash)"
+      },
+      {
+        "command": "ggit.pickContinue",
+        "title": "GGit: Commit Cherry-Pick or Revert",
+        "icon": "$(check)"
+      },
+      {
+        "command": "ggit.pickAbort",
+        "title": "GGit: Abort Cherry-Pick or Revert",
         "icon": "$(circle-slash)"
       },
       {
@@ -409,6 +419,11 @@
         {
           "command": "ggit.mergeAbort",
           "when": "view == ggitConflicts && ggit.mergeInProgress",
+          "group": "navigation@0"
+        },
+        {
+          "command": "ggit.pickAbort",
+          "when": "view == ggitConflicts && ggit.pickInProgress",
           "group": "navigation@0"
         },
         {

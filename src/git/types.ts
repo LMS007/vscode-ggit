@@ -115,6 +115,9 @@ export interface MergeOptions {
 	commit: boolean;
 }
 
+/** The two single-commit operations git runs through its sequencer -- see GitService.applyCommit. */
+export type PickOperation = 'cherry-pick' | 'revert';
+
 /** A local tag -- see GitService.listTags. */
 export interface TagInfo {
 	name: string;

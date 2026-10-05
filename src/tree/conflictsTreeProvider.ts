@@ -5,8 +5,8 @@ import { toResolveConflictsUri } from './workingChangeDecoration';
 /** The Conflicts view's only possible row -- see the class doc below. */
 type ResolveConflictsNode = 'resolveConflicts';
 
-/** Only shown at all while a rebase or merge is stopped (see `ggit.rebaseInProgress` /
- * `ggit.mergeInProgress` in extension.ts). Resolving conflicts itself happens in the dedicated
+/** Only shown at all while a rebase, merge, cherry-pick, or revert is stopped (see
+ * `ggit.rebaseInProgress` / `ggit.mergeInProgress` / `ggit.pickInProgress` in extension.ts). Resolving conflicts itself happens in the dedicated
  * Conflicts tab (see ConflictsPanel), not here -- this view is just a permanent, always-visible entry
  * point back into that tab, so there's still something in the sidebar to click even after the tab's
  * been closed or moved out of focus. */
@@ -39,7 +39,9 @@ export class ConflictsTreeProvider implements vscode.TreeDataProvider<ResolveCon
 		item.tooltip =
 			this.operation === 'merge'
 				? 'Open the Merge tab to resolve any conflicts and commit the merge.'
-				: 'Open the Rebase tab to resolve the current conflict.';
+				: this.operation === 'rebase'
+					? 'Open the Rebase tab to resolve the current conflict.'
+					: `Open the ${this.operation === 'revert' ? 'Revert' : 'Cherry-Pick'} tab to resolve its conflicts and commit it.`;
 		item.command = { command: 'ggit.openConflictsTab', title: label };
 		return item;
 	}

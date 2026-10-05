@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { GGIT_SHOW_SCHEME, INDEX_REF } from '../diff/showContentProvider';
 import { GitService, parseStashSubject, splitRemoteBranch } from './gitService';
-import { WorkingChangeFile } from './types';
+import { PickOperation, WorkingChangeFile } from './types';
 
 /** Picks a remote with no prompt at all: `preferredRemote` if given (the History tab's own remote
  * dropdown already resolved that choice), else "origin" if configured, else whichever remote happens
@@ -231,6 +231,45 @@ export async function resetHeadToCommit(gitService: GitService, sha: string, mod
 		}
 	}
 	await gitService.resetHead(sha, mode);
+}
+
+/** Cherry-picks or reverts `sha` onto the checked-out branch, from the History tab's context menu.
+ * Revert confirms first: it adds a commit to whatever branch is checked out, which needn't be the one
+ * the History tab is showing. Stopping on conflicts isn't treated as a failure -- the Conflicts tab
+ * opens for it on the refresh that follows (see updateConflictContext in extension.ts). */
+export async function applyCommitToCurrentBranch(gitService: GitService, operation: PickOperation, sha: string): Promise<void> {
+	const [{ subject, isMerge }, current] = await Promise.all([gitService.getCommitSummary(sha), gitService.getCurrentBranch()]);
+	const shortSha = sha.slice(0, 7);
+	const target = current ? `"${current}"` : 'the detached HEAD';
+	if (operation === 'revert') {
+		const mergeNote = isMerge ? " It's a merge commit, so this undoes everything the merge brought in." : '';
+		const confirmed = await vscode.window.showWarningMessage(
+			`Revert ${shortSha} "${subject}"?`,
+			{
+				modal: true,
+				detail: `Adds a new commit to ${target} that undoes this commit's changes. The original stays in history, so this is safe even if it's already been pushed.${mergeNote}`,
+			},
+			'Revert'
+		);
+		if (confirmed !== 'Revert') {
+			return;
+		}
+	}
+	const outcome = await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: `${operation === 'revert' ? 'Reverting' : 'Cherry-picking'} ${shortSha}…` },
+		() => gitService.applyCommit(operation, sha)
+	);
+	if (outcome === 'conflicts') {
+		void vscode.window.showInformationMessage(
+			`GGit: The ${operation} of ${shortSha} stopped on conflicts. Resolve them in the Conflicts tab, then commit it there.`
+		);
+	} else if (outcome === 'empty') {
+		void vscode.window.showInformationMessage(
+			operation === 'revert'
+				? `GGit: Nothing to revert -- ${target} already has ${shortSha}'s changes undone.`
+				: `GGit: Nothing to cherry-pick -- ${target} already has ${shortSha}'s changes.`
+		);
+	}
 }
 
 /** Confirms, with wording tailored to what's actually about to happen — a new/untracked file gets

@@ -160,10 +160,15 @@ export function activate(context: vscode.ExtensionContext): void {
 	// while it's already open.
 	let activeConflictOperation: ConflictOperation | undefined;
 	const updateConflictContext = async () => {
-		const [rebasing, merging] = await Promise.all([gitService.isRebaseInProgress(), gitService.isMergeInProgress()]);
+		const [rebasing, merging, pick] = await Promise.all([
+			gitService.isRebaseInProgress(),
+			gitService.isMergeInProgress(),
+			gitService.getPickInProgress(),
+		]);
 		void vscode.commands.executeCommand('setContext', 'ggit.rebaseInProgress', rebasing);
 		void vscode.commands.executeCommand('setContext', 'ggit.mergeInProgress', merging);
-		const operation: ConflictOperation | undefined = rebasing ? 'rebase' : merging ? 'merge' : undefined;
+		void vscode.commands.executeCommand('setContext', 'ggit.pickInProgress', pick !== undefined);
+		const operation: ConflictOperation | undefined = rebasing ? 'rebase' : merging ? 'merge' : pick?.operation;
 		if (operation && operation !== activeConflictOperation) {
 			// refreshAll's own conflictsProvider.refresh() already ran before this resolved, with the
 			// old wording -- so refresh again now that it knows which operation this is.
@@ -502,6 +507,47 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			return runGitOperation('Aborting merge…', () => gitService.mergeAbort(), refreshAll);
+		}),
+
+		// A stopped cherry-pick or revert (see GitService.applyCommit) -- one command for both, since which
+		// one is in progress is read live rather than trusted from whoever triggered it.
+		vscode.commands.registerCommand('ggit.pickContinue', async () => {
+			const pick = await gitService.getPickInProgress();
+			if (!pick) {
+				return;
+			}
+			return runGitOperation(
+				`Committing ${pick.operation}…`,
+				async () => {
+					try {
+						await gitService.pickContinue(pick.operation);
+					} catch (err) {
+						// Resolving every file back to the branch's own version leaves nothing to commit, and
+						// git's own advice for that ("use --skip") isn't a button here -- Abort is the way out.
+						if (/now empty/.test((err as Error).message)) {
+							throw new Error(`Nothing left to commit -- the resolved files match the branch as it was. Abort the ${pick.operation} to finish.`);
+						}
+						throw err;
+					}
+				},
+				refreshAll
+			);
+		}),
+
+		vscode.commands.registerCommand('ggit.pickAbort', async () => {
+			const pick = await gitService.getPickInProgress();
+			if (!pick) {
+				return;
+			}
+			const confirmed = await vscode.window.showWarningMessage(
+				`Abort the ${pick.operation}? This puts the branch back the way it was before it started, including any conflicts already resolved.`,
+				{ modal: true },
+				`Abort ${pick.operation === 'revert' ? 'Revert' : 'Cherry-Pick'}`
+			);
+			if (!confirmed) {
+				return;
+			}
+			return runGitOperation(`Aborting ${pick.operation}…`, () => gitService.pickAbort(pick.operation), refreshAll);
 		}),
 
 		// The sidebar Conflicts view's only row -- opens (or refocuses) the Conflicts tab, where resolving
@@ -874,7 +920,8 @@ export function activate(context: vscode.ExtensionContext): void {
 			// in-progress rebase (conflicted or not) — watching them is what lets the Conflicts view
 			// and its `ggit.rebaseInProgress` context key react promptly to a rebase starting, pausing
 			// on a conflict, or finishing/aborting, including one driven from the integrated terminal.
-			// MERGE_HEAD does the same for a stopped merge (`ggit.mergeInProgress`).
+			// MERGE_HEAD does the same for a stopped merge (`ggit.mergeInProgress`), and CHERRY_PICK_HEAD /
+			// REVERT_HEAD for a stopped cherry-pick or revert (`ggit.pickInProgress`).
 			// worktrees/** is git's per-linked-worktree admin dir — a subdirectory appears/disappears
 			// on `git worktree add`/`remove`, and each one's own HEAD file changes when that worktree
 			// switches branches, which is exactly the state Branches' blue/"checked out elsewhere"
@@ -883,7 +930,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			// shared git dir, not a per-worktree pointer file. If GGit ever opens from inside a linked
 			// worktree instead, this would need to watch the resolved git-common-dir rather than a
 			// hardcoded ".git" under the workspace folder.
-			'{HEAD,MERGE_HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}'
+			'{HEAD,MERGE_HEAD,CHERRY_PICK_HEAD,REVERT_HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}'
 		)
 	);
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;

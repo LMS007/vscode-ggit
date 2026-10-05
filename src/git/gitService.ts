@@ -11,6 +11,7 @@ import {
 	MergeAnalysis,
 	MergeOptions,
 	MergeProgress,
+	PickOperation,
 	RebaseProgress,
 	RefBadge,
 	RemoteBranchInfo,
@@ -649,12 +650,70 @@ export class GitService {
 		await this.git.raw(['reset', `--${mode}`, sha]);
 	}
 
-	/** Replays `sha`'s changes as a new commit on top of the current branch. Throws (with git's own
-	 * conflict message) if it can't apply cleanly — there's no in-extension conflict resolution, so
-	 * that has to be sorted out in the terminal. */
-	async cherryPick(sha: string): Promise<void> {
+	/** Cherry-pick replays `sha`'s changes as a new commit on the current branch; revert adds one that
+	 * undoes them. A merge commit gets `-m 1` -- git refuses either without picking a parent, and the
+	 * first is the branch it was merged into, so that's "the changes the merge brought in".
+	 *
+	 * Resolves rather than throws for the two ways git can stop short: 'conflicts' (it's left
+	 * mid-operation for the Conflicts tab -- see getPickInProgress) and 'empty', when the branch
+	 * already has the result. A cherry-pick stops for that too, with nothing to resolve and a Continue
+	 * that only fails, so this skips it; a revert just exits without committing, and since that's
+	 * stdout-only, raw() doesn't reject it -- an unmoved HEAD is how that case shows up. */
+	async applyCommit(operation: PickOperation, sha: string): Promise<'applied' | 'conflicts' | 'empty'> {
 		assertObjectId(sha);
-		await this.git.raw(['cherry-pick', sha]);
+		const { isMerge } = await this.getCommitSummary(sha);
+		const args = [operation, ...(operation === 'revert' ? ['--no-edit'] : []), ...(isMerge ? ['-m', '1'] : []), sha];
+		const headBefore = (await this.git.raw(['rev-parse', 'HEAD'])).trim();
+		try {
+			await this.git.raw(args);
+		} catch (err) {
+			if (!(await this.getPickInProgress())) {
+				throw err;
+			}
+			if ((await this.getConflictedFiles()).length === 0 && /now empty/.test((err as Error).message)) {
+				await this.git.raw([operation, '--skip']);
+				return 'empty';
+			}
+			return 'conflicts';
+		}
+		const headAfter = (await this.git.raw(['rev-parse', 'HEAD'])).trim();
+		return headAfter === headBefore ? 'empty' : 'applied';
+	}
+
+	/** A commit's subject, and whether it's a merge (more than one parent). */
+	async getCommitSummary(sha: string): Promise<{ subject: string; isMerge: boolean }> {
+		assertObjectId(sha);
+		const out = await this.git.raw(['log', '-1', `--format=%s${FIELD_SEP}%P`, sha, '--']);
+		const [subject, parents] = out.trim().split(FIELD_SEP);
+		return { subject: subject ?? '', isMerge: (parents ?? '').split(' ').filter(Boolean).length > 1 };
+	}
+
+	/** A cherry-pick or revert stopped partway, on conflicts -- which one, and the commit it was
+	 * applying, from the CHERRY_PICK_HEAD / REVERT_HEAD file git leaves until it's continued or
+	 * aborted. Undefined when neither is in progress. */
+	async getPickInProgress(): Promise<{ operation: PickOperation; commit: string; subject: string } | undefined> {
+		const gitDir = await this.getGitDir();
+		for (const [operation, file] of [['cherry-pick', 'CHERRY_PICK_HEAD'], ['revert', 'REVERT_HEAD']] as const) {
+			const markerPath = path.join(gitDir, file);
+			if (!fs.existsSync(markerPath)) {
+				continue;
+			}
+			const commit = fs.readFileSync(markerPath, 'utf8').trim();
+			const subject = /^[0-9a-f]{4,64}$/.test(commit) ? (await this.getCommitSummary(commit)).subject : '';
+			return { operation, commit, subject };
+		}
+		return undefined;
+	}
+
+	/** Finishes a stopped cherry-pick or revert once its conflicts are staged. core.editor=true accepts
+	 * git's own message, same as mergeCommit (whose comment says why not --no-edit). */
+	async pickContinue(operation: PickOperation): Promise<void> {
+		await this.git.raw(['-c', 'core.editor=true', operation, '--continue']);
+	}
+
+	/** Puts the branch back exactly where it was before the cherry-pick or revert started. */
+	async pickAbort(operation: PickOperation): Promise<void> {
+		await this.git.raw([operation, '--abort']);
 	}
 
 	/** A single-commit patch in the standard git-am-able format (commit message, author, date included). */

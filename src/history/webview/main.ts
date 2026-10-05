@@ -567,6 +567,9 @@ commitContextMenuEl.addEventListener('click', event => {
 		case 'cherryPick':
 			vscodeApi.postMessage({ type: 'cherryPick', sha });
 			break;
+		case 'revert':
+			vscodeApi.postMessage({ type: 'revertCommit', sha });
+			break;
 		case 'savePatch':
 			vscodeApi.postMessage({ type: 'savePatch', sha, subject: commit?.message ?? sha });
 			break;

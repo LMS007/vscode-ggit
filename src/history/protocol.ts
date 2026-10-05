@@ -77,6 +77,8 @@ export type WebviewMessage =
 	| { type: 'setRemote'; remote: string }
 	| { type: 'resetHead'; sha: string; mode: 'mixed' | 'hard' }
 	| { type: 'cherryPick'; sha: string }
+	/** "Revert Commit…" -- confirmed host-side (see applyCommitToCurrentBranch), not here. */
+	| { type: 'revertCommit'; sha: string }
 	| { type: 'savePatch'; sha: string; subject: string }
 	/** The commits pane was scrolled near its bottom and there's more to fetch (see 'commits'.hasMore
 	 * / 'moreCommits'.hasMore). */

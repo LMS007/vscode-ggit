@@ -25,7 +25,21 @@ function escapeHtml(text: string): string {
 
 function renderState(state: ConflictsHostState): void {
 	const isMerge = state.operation === 'merge';
-	if (isMerge) {
+	const isRevert = state.operation === 'revert';
+	// A cherry-pick or revert is one commit, finished in a single step -- like a merge.
+	const isPick = state.operation === 'cherry-pick' || isRevert;
+	const pickName = isRevert ? 'Revert' : 'Cherry-Pick';
+	if (isPick) {
+		const commit = state.commit ? state.commit.slice(0, 7) : 'a commit';
+		const onto = state.branchName ?? 'the current branch';
+		progressEl.textContent = `${isRevert ? 'Reverting' : 'Cherry-picking'} ${commit}${state.subject ? `: ${state.subject}` : ''} onto ${onto}`;
+		// Same Current/Incoming explanation as a merge's -- Incoming is the commit's change, or for a
+		// revert, the change that undoes it.
+		hintEl.textContent =
+			state.totalFilesThisCommit > 0
+				? `In each file, Current is ${onto} and Incoming is ${isRevert ? `the undo of ${commit}` : `${commit}'s change`}.`
+				: '';
+	} else if (isMerge) {
 		const from = state.branchName ?? 'a branch';
 		const into = state.intoBranch ?? 'the current branch';
 		progressEl.textContent = `Merging ${from} into ${into}`;
@@ -46,14 +60,18 @@ function renderState(state: ConflictsHostState): void {
 	// The label change (Finish, on the last commit) and the color/enabled change (once every file in
 	// *this* commit is staged) are two independent rules -- see conflictsPanel.ts's doc comment. A merge
 	// is a single step, so it's always "the last one" -- green once everything's staged.
-	const isLastStep = isMerge || (state.total > 0 && state.current >= state.total);
-	continueLabelEl.textContent = isMerge ? 'Commit Merge' : isLastStep ? 'Finish Rebase' : 'Next Commit';
+	const isLastStep = isMerge || isPick || (state.total > 0 && state.current >= state.total);
+	continueLabelEl.textContent = isPick ? `Commit ${pickName}` : isMerge ? 'Commit Merge' : isLastStep ? 'Finish Rebase' : 'Next Commit';
 	continueButton.disabled = remaining > 0;
 	continueButton.classList.toggle('toolbar-btn-primary', remaining === 0 && !isLastStep);
 	continueButton.classList.toggle('toolbar-btn-success', remaining === 0 && isLastStep);
-	skipButton.hidden = isMerge;
-	abortLabelEl.textContent = isMerge ? 'Abort Merge' : 'Abort Rebase';
+	skipButton.hidden = isMerge || isPick;
+	abortLabelEl.textContent = isPick ? `Abort ${pickName}` : isMerge ? 'Abort Merge' : 'Abort Rebase';
 
+	if (state.files.length === 0 && isPick) {
+		filesEl.innerHTML = `<div class="empty">Every file is resolved -- click Commit ${pickName} to finish.</div>`;
+		return;
+	}
 	if (state.files.length === 0) {
 		filesEl.innerHTML = isMerge
 			? state.totalFilesThisCommit > 0

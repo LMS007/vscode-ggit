@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { openDiffForFile } from '../diff/openDiff';
-import { resetHeadToCommit } from '../git/gitActions';
+import { applyCommitToCurrentBranch, resetHeadToCommit } from '../git/gitActions';
 import { GitService } from '../git/gitService';
 import { CommitInfo } from '../git/types';
 import { HostMessage, WebviewMessage } from './protocol';
@@ -354,12 +354,18 @@ export class BranchHistoryPanel {
 				}
 				break;
 			case 'cherryPick':
+			case 'revertCommit': {
+				const operation = msg.type === 'revertCommit' ? 'revert' : 'cherry-pick';
 				try {
-					await this.gitService.cherryPick(msg.sha);
+					await applyCommitToCurrentBranch(this.gitService, operation, msg.sha);
 				} catch (err) {
-					vscode.window.showErrorMessage(`GGit: Cherry-pick failed: ${(err as Error).message}`);
+					vscode.window.showErrorMessage(`GGit: ${operation === 'revert' ? 'Revert' : 'Cherry-pick'} failed: ${(err as Error).message}`);
 				}
+				// Not left to the .git watcher: this is also what opens the Conflicts tab when it stopped.
+				void vscode.commands.executeCommand('ggit.refresh');
+				await this.loadCommits(false);
 				break;
+			}
 			case 'savePatch':
 				try {
 					await this.saveCommitPatch(msg.sha, msg.subject);
@@ -1107,6 +1113,7 @@ export class BranchHistoryPanel {
 		<div class="context-menu-item danger" data-action="resetHard">Reset Branch to Here (Hard)</div>
 		<div class="context-menu-separator"></div>
 		<div class="context-menu-item" data-action="cherryPick">Cherry-Pick Commit</div>
+		<div class="context-menu-item" data-action="revert">Revert Commit…</div>
 		<div class="context-menu-separator"></div>
 		<div class="context-menu-item" data-action="savePatch">Save Patch…</div>
 	</div>

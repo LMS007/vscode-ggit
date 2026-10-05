@@ -3,8 +3,8 @@ import { saveOpenDocumentIfDirty } from '../documentUtils';
 import { GitService } from '../git/gitService';
 import { ConflictOperation, ConflictsHostMessage, ConflictsWebviewMessage } from './conflictsProtocol';
 
-/** The dedicated tab for working through a stopped rebase or merge -- a rebase one paused commit at a
- * time, a merge in a single pass. Opened automatically the moment either one stops (see
+/** The dedicated tab for working through a stopped rebase, merge, cherry-pick, or revert -- a rebase
+ * one paused commit at a time, the others in a single pass. Opened automatically the moment either one stops (see
  * updateConflictContext in extension.ts), and reachable afterward via the sidebar Conflicts view's
  * permanent row (see conflictsTreeProvider.ts). Modeled on BranchHistoryPanel/CommitPanel: a single
  * webview panel, refreshed in place as things progress rather than reopened per step. git can't be
@@ -69,16 +69,38 @@ export class ConflictsPanel {
 			return;
 		}
 		try {
-			const [rebasing, merging] = await Promise.all([this.gitService.isRebaseInProgress(), this.gitService.isMergeInProgress()]);
-			if (!rebasing && !merging) {
+			const [rebasing, merging, pick] = await Promise.all([
+				this.gitService.isRebaseInProgress(),
+				this.gitService.isMergeInProgress(),
+				this.gitService.getPickInProgress(),
+			]);
+			if (!rebasing && !merging && !pick) {
 				// Nothing left to show, regardless of why -- finishing, aborting, or someone resolving it
 				// entirely outside this tab.
 				this.panel.dispose();
 				return;
 			}
-			this.operation = rebasing ? 'rebase' : 'merge';
+			this.operation = rebasing ? 'rebase' : merging ? 'merge' : pick!.operation;
 			const files = await this.gitService.getConflictedFiles();
-			if (this.operation === 'rebase') {
+			if (pick && !rebasing && !merging) {
+				const branchName = await this.gitService.getCurrentBranch();
+				this.trackStep(`${pick.operation}:${pick.commit}`, files.length);
+				this.panel.title = `${pick.operation === 'revert' ? 'Revert' : 'Cherry-Pick'}: ${pick.commit.slice(0, 7)}`;
+				this.post({
+					type: 'state',
+					state: {
+						operation: pick.operation,
+						branchName,
+						commit: pick.commit,
+						intoBranch: undefined,
+						current: 0,
+						total: 0,
+						subject: pick.subject,
+						files,
+						totalFilesThisCommit: this.totalFilesThisCommit,
+					},
+				});
+			} else if (this.operation === 'rebase') {
 				const progress = await this.gitService.getRebaseProgress();
 				const current = progress?.current ?? 0;
 				this.trackStep(`rebase:${current}`, files.length);
@@ -88,6 +110,7 @@ export class ConflictsPanel {
 					state: {
 						operation: 'rebase',
 						branchName: progress?.branchName,
+						commit: undefined,
 						intoBranch: undefined,
 						current,
 						total: progress?.total ?? 0,
@@ -105,6 +128,7 @@ export class ConflictsPanel {
 					state: {
 						operation: 'merge',
 						branchName: progress?.branchName,
+						commit: undefined,
 						intoBranch: progress?.intoBranch,
 						current: 0,
 						total: 0,
@@ -173,16 +197,21 @@ export class ConflictsPanel {
 			// Abort's confirmation modal lives there too, so it's identical whether triggered from here
 			// or the sidebar's own Abort button.
 			case 'continue':
-				void vscode.commands.executeCommand(this.operation === 'merge' ? 'ggit.mergeCommit' : 'ggit.rebaseContinue');
+				void vscode.commands.executeCommand(
+					this.operation === 'merge' ? 'ggit.mergeCommit' : this.operation === 'rebase' ? 'ggit.rebaseContinue' : 'ggit.pickContinue'
+				);
 				break;
 			case 'skip':
-				// Merges have no per-commit steps to skip -- the webview hides this button for one.
+				// Only a rebase has more than one commit to step through -- the webview hides this button
+				// for everything else.
 				if (this.operation === 'rebase') {
 					void vscode.commands.executeCommand('ggit.rebaseSkip');
 				}
 				break;
 			case 'abort':
-				void vscode.commands.executeCommand(this.operation === 'merge' ? 'ggit.mergeAbort' : 'ggit.rebaseAbort');
+				void vscode.commands.executeCommand(
+					this.operation === 'merge' ? 'ggit.mergeAbort' : this.operation === 'rebase' ? 'ggit.rebaseAbort' : 'ggit.pickAbort'
+				);
 				break;
 		}
 	}
