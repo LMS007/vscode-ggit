@@ -979,12 +979,17 @@ export class BranchHistoryPanel {
 			color: var(--vscode-editor-background, #1e1e1e);
 		}
 		/* The selected row's background is the same blue as .ref-badge-local, so on its own the
-		 * local badge would vanish into the row. Lightening every badge (blending white over
-		 * whatever blue the row is) keeps them visible as distinct pills against it. */
-		.row.selected .ref-badge-local,
-		.row.selected .ref-badge-remote {
+		 * local badge would vanish into the row. Lightening it (blending white over whatever blue
+		 * the row is) keeps it visible as a distinct pill against it. */
+		.row.selected .ref-badge-local {
 			background-color: rgba(255, 255, 255, 0.25);
 			color: var(--vscode-badge-foreground, #ffffff);
+		}
+		/* A remote badge darkens instead -- a deeper shade of its usual grey -- so it stays grey
+		 * rather than turning into a second light-blue pill. Always dark, so always white text. */
+		.row.selected .ref-badge-remote {
+			background-color: color-mix(in srgb, var(--vscode-descriptionForeground, #8a8a8a), black 45%);
+			color: #ffffff;
 		}
 		.ref-badge-tag {
 			background-color: var(--vscode-gitDecoration-addedResourceForeground, #4b4);
