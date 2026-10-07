@@ -3,6 +3,8 @@
 A git UI for VS Code: Working Copy, Branches, Remotes, Tags, and Stashes in the sidebar, plus a
 branch-history panel with search.
 
+<img width="1288" height="763" alt="image" src="https://github.com/user-attachments/assets/f549b393-6697-40cf-9e44-3b67844eba92" />
+
 ## Install
 
 GGit isn't on the Marketplace. Install it from a `.vsix` on the
