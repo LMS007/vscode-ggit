@@ -920,6 +920,20 @@ export class BranchHistoryPanel {
 		}
 		.commit-row-wrapper:has(+ .commit-details-wrapper:last-child) .commit-graph-line { bottom: 50%; }
 		.commit-details-wrapper:last-child .commit-graph-line { display: none; }
+		/* Its line fades from the expanded commit's color to the next commit's (see the unpushed
+		 * coloring above). The + / :has(+) neighbor rules don't see past this panel, so the rows on
+		 * either side each keep their own color up to it. With no commit row after it (a loading or
+		 * "Search older" row), it carries the expanded commit's color on. */
+		.commit-details-wrapper {
+			--graph-above: var(--vscode-charts-blue, #3b82f6);
+			--graph-below: var(--graph-above);
+		}
+		.commit-row-wrapper.unpushed + .commit-details-wrapper { --graph-above: var(--vscode-charts-green, #1f883d); }
+		.commit-details-wrapper:has(+ .commit-row-wrapper) { --graph-below: var(--vscode-charts-blue, #3b82f6); }
+		.commit-details-wrapper:has(+ .commit-row-wrapper.unpushed) { --graph-below: var(--vscode-charts-green, #1f883d); }
+		.commit-details-wrapper .commit-graph-line {
+			background: linear-gradient(var(--graph-above), var(--graph-below));
+		}
 		.commit-row-wrapper.expanded .commit-row::after { display: none; }
 		.commit-details {
 			flex: 1 1 auto;
