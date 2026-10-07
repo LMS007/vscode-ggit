@@ -45,10 +45,17 @@ export class GitService {
 		// binary prefix (spawning `git --no-optional-locks <args>`) rather than GIT_OPTIONAL_LOCKS=0 via
 		// .env(), because a custom env must then carry all of process.env, and simple-git refuses to
 		// run anything at all when that includes EDITOR/PAGER/GIT_ASKPASS -- which most login shells set.
+		// simple-git 4 also strips GIT_* (and a few other) variables inherited from VS Code's environment
+		// unless they're in allowEnvironment -- protection for servers whose environment an attacker
+		// might set. Here it's the user's own, carrying the SSH/credential/proxy/CA setup a fetch or push
+		// needs (GIT_SSH_COMMAND, GIT_ASKPASS, GIT_SSL_CAINFO, ...), so it all passes through except
+		// GIT_EDITOR: that outranks the core.editor=true above and would leave a continue waiting on an
+		// editor nobody can see.
 		this.git = simpleGit({
 			baseDir: repoRoot,
 			binary: ['git', '--no-optional-locks'],
 			unsafe: { allowUnsafeEditor: true },
+			allowEnvironment: Object.keys(process.env).filter(key => key.toLowerCase() !== 'git_editor'),
 		});
 	}
 
