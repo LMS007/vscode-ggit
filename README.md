@@ -84,10 +84,8 @@ inline, check it off, then Continue/Commit, Skip, or Abort.
 ## Not implemented yet
 
 - Creating or switching to a `git worktree`. Branches shows worktrees but can't manage them.
-- More than one History tab at a time.
 - Interactive rebase (reorder, squash, reword, drop).
 - Discard Hunk.
-- History search by file path or diff content.
 - Credential/SSH management. GGit uses whatever already works from your terminal.
 
 ## Development
