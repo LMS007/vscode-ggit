@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { GitService } from '../git/gitService';
+import { GitService, unlessNotARepo } from '../git/gitService';
 import { WorkingChangeFile } from '../git/types';
 import { toCreateCommitUri, toWorkingChangeUri } from './workingChangeDecoration';
 
@@ -45,9 +45,14 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		if (element) {
 			return [];
 		}
-		const files = await this.gitService.time('WorkingCopyTreeProvider.getChildren: getWorkingChanges', () =>
-			this.gitService.getWorkingChanges()
+		const files = await unlessNotARepo(
+			this.gitService.time('WorkingCopyTreeProvider.getChildren: getWorkingChanges', () => this.gitService.getWorkingChanges()),
+			undefined
 		);
+		// Not a repo: no Create Commit row either, not just no files.
+		if (!files) {
+			return [];
+		}
 		// Sorted by path first — deliberately not re-grouped by staged/unstaged, so checking a box
 		// doesn't reshuffle the list out from under you — then staged-before-unstaged only to give a
 		// deterministic order to the two rows a split (partially-staged) path produces.

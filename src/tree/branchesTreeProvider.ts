@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { GitService } from '../git/gitService';
+import { GitService, unlessNotARepo } from '../git/gitService';
 import { BranchInfo } from '../git/types';
 import { toBranchUri } from './activeBranchDecoration';
 import { BranchTreeLeaf, BranchTreeNode, buildBranchTree, sortTree } from './branchTree';
@@ -32,7 +32,7 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 		if (element) {
 			return element.kind === 'folder' ? element.children : [];
 		}
-		return this.gitService.time('BranchesTreeProvider.getChildren', async () => {
+		return unlessNotARepo(this.gitService.time('BranchesTreeProvider.getChildren', async () => {
 			const branches = await this.gitService.listLocalBranches();
 			const byName = new Map(branches.map(b => [b.name, b]));
 
@@ -59,7 +59,7 @@ export class BranchesTreeProvider implements vscode.TreeDataProvider<BranchTreeN
 				...(mainName ? [flatLeaf(byName.get(mainName)!)] : []),
 				...sortTree(buildBranchTree(remaining, b => b.name), PINNED_BRANCHES),
 			];
-		});
+		}), []);
 	}
 
 	getTreeItem(node: BranchTreeNode<BranchInfo>): vscode.TreeItem {

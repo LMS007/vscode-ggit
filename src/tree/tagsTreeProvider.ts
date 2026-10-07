@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GitService } from '../git/gitService';
+import { GitService, unlessNotARepo } from '../git/gitService';
 import { RemoteTagInfo, TagInfo } from '../git/types';
 
 /** One row of the Tags view -- a local tag, or one that so far only exists on some remote(s). */
@@ -53,7 +53,7 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 		this.remoteLoadStarted = true;
 		const generation = ++this.remoteLoadGeneration;
 		void (async () => {
-			const remotes = await this.gitService.listRemotes();
+			const remotes = await unlessNotARepo(this.gitService.listRemotes(), []);
 			if (remotes.length === 0) {
 				this.remoteTags = new Map();
 				this._onDidChangeRemoteStatus.fire(undefined);
@@ -92,7 +92,7 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 		if (!this.remoteLoadStarted) {
 			this.refreshRemotes();
 		}
-		return this.gitService.time('TagsTreeProvider.getChildren', async () => {
+		return unlessNotARepo(this.gitService.time('TagsTreeProvider.getChildren', async () => {
 			const [tags, remotes] = await Promise.all([this.gitService.listTags(), this.gitService.listRemotes()]);
 			const remoteStates = (name: string): TagRemoteState[] =>
 				remotes.map(remote => {
@@ -118,7 +118,7 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 			// Newest version first -- numeric collation so v1.10.0 sorts above v1.9.0. By name rather
 			// than date because a remote-only tag has no date to sort by until it's fetched.
 			return nodes.sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }));
-		});
+		}), []);
 	}
 
 	getTreeItem(node: TagNode): vscode.TreeItem {

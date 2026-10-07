@@ -27,7 +27,7 @@ import {
 	syncCurrentBranch,
 	unstageHunkAtCursor,
 } from './git/gitActions';
-import { GitService, splitRemoteBranch } from './git/gitService';
+import { GitService, splitRemoteBranch, unlessNotARepo } from './git/gitService';
 import { BranchInfo, RemoteBranchInfo, StashInfo, WorkingChangeFile } from './git/types';
 import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
@@ -126,7 +126,10 @@ export function activate(context: vscode.ExtensionContext): void {
 	// its container's activity-bar icon automatically, so setting this on just the Working Copy view
 	// is enough to badge the whole "GGit" icon.
 	const updateWorkingCopyBadge = async () => {
-		const files = await gitService.time('updateWorkingCopyBadge: getWorkingChanges', () => gitService.getWorkingChanges());
+		const files = await unlessNotARepo(
+			gitService.time('updateWorkingCopyBadge: getWorkingChanges', () => gitService.getWorkingChanges()),
+			[]
+		);
 		// Distinct paths, not rows -- a partially-staged file produces two rows (see
 		// GitService.getWorkingChanges) but is still only one changed file for this count.
 		const count = new Set(files.map(f => f.path)).size;
@@ -140,7 +143,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	// repo folder name (what "GGit - <folder>" would've shown, if that were possible) and the active
 	// branch both go there instead, folder first since that's the more stable/identifying of the two.
 	const updateActiveBranchLabel = async () => {
-		const current = await gitService.getCurrentBranch();
+		const current = await unlessNotARepo(gitService.getCurrentBranch(), undefined);
 		workingCopyView.description = current ? `${workspaceFolder.name} · ${current}` : workspaceFolder.name;
 		// Recorded here rather than only around GGit's own checkout commands, so a checkout run from the
 		// integrated terminal still updates Recents -- same "pick this up regardless of source" approach
@@ -160,11 +163,10 @@ export function activate(context: vscode.ExtensionContext): void {
 	// while it's already open.
 	let activeConflictOperation: ConflictOperation | undefined;
 	const updateConflictContext = async () => {
-		const [rebasing, merging, pick] = await Promise.all([
-			gitService.isRebaseInProgress(),
-			gitService.isMergeInProgress(),
-			gitService.getPickInProgress(),
-		]);
+		const [rebasing, merging, pick] = await unlessNotARepo(
+			Promise.all([gitService.isRebaseInProgress(), gitService.isMergeInProgress(), gitService.getPickInProgress()]),
+			[false, false, undefined]
+		);
 		void vscode.commands.executeCommand('setContext', 'ggit.rebaseInProgress', rebasing);
 		void vscode.commands.executeCommand('setContext', 'ggit.mergeInProgress', merging);
 		void vscode.commands.executeCommand('setContext', 'ggit.pickInProgress', pick !== undefined);

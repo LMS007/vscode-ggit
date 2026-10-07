@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GitService, stripRemotePrefix } from '../git/gitService';
+import { GitService, stripRemotePrefix, unlessNotARepo } from '../git/gitService';
 import { RemoteBranchInfo } from '../git/types';
 import { BranchTreeNode, buildBranchTree, sortTree } from './branchTree';
 
@@ -33,7 +33,7 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 		if (element) {
 			return element.kind === 'folder' ? element.children : [];
 		}
-		return this.gitService.time('RemotesTreeProvider.getChildren', async () => {
+		return unlessNotARepo(this.gitService.time('RemotesTreeProvider.getChildren', async () => {
 			const remoteNames = await this.gitService.listRemotes();
 			const branchesByRemote = await Promise.all(remoteNames.map(name => this.gitService.listRemoteBranches(name)));
 			const branches = branchesByRemote.flat();
@@ -45,7 +45,7 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 			// so a repo with multiple remotes gets one folder per remote instead of a single flat
 			// (and ambiguous, if two remotes shared a branch name) list.
 			return sortTree(buildBranchTree(filtered, b => b.name));
-		});
+		}), []);
 	}
 
 	getTreeItem(node: BranchTreeNode<RemoteBranchInfo>): vscode.TreeItem {

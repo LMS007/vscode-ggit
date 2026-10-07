@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GitService, parseStashSubject } from '../git/gitService';
+import { GitService, parseStashSubject, unlessNotARepo } from '../git/gitService';
 import { StashInfo } from '../git/types';
 
 export class StashesTreeProvider implements vscode.TreeDataProvider<StashInfo> {
@@ -13,7 +13,9 @@ export class StashesTreeProvider implements vscode.TreeDataProvider<StashInfo> {
 	}
 
 	getChildren(element?: StashInfo): Thenable<StashInfo[]> {
-		return element ? Promise.resolve([]) : this.gitService.time('StashesTreeProvider.getChildren', () => this.gitService.listStashes());
+		return element
+			? Promise.resolve([])
+			: unlessNotARepo(this.gitService.time('StashesTreeProvider.getChildren', () => this.gitService.listStashes()), []);
 	}
 
 	getTreeItem(stash: StashInfo): vscode.TreeItem {

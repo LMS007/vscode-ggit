@@ -1229,6 +1229,22 @@ function assertObjectId(sha: string): void {
 /** Rejects a user-typed name that git's option parser would read as a flag instead of a name --
  * verified that `git branch --no-track -D <startPoint>` (the result of naming a branch "-D") deletes
  * startPoint outright, so this can't be left to git's own name validation, which runs too late. */
+/** `read`'s result, or `fallback` when the workspace folder isn't inside a git repo -- every git
+ * command then fails with "fatal: not a git repository". GGit activates in every window (it's
+ * onStartupFinished), git or not, so for the views that's just "nothing to show", not an error. Any
+ * other failure still rejects. Nothing caches this, so a later `git init` fills the views in on the
+ * next refresh. */
+export async function unlessNotARepo<T>(read: Promise<T>, fallback: T): Promise<T> {
+	try {
+		return await read;
+	} catch (err) {
+		if (err instanceof Error && err.message.includes('not a git repository')) {
+			return fallback;
+		}
+		throw err;
+	}
+}
+
 function assertNotOptionLike(name: string, what: string): void {
 	if (name.startsWith('-')) {
 		throw new Error(`Invalid ${what} "${name}": it can't start with "-".`);
