@@ -1,126 +1,102 @@
 # GGit
 
-A git UI for VS Code — Working Copy, Branches, Remotes, and Stashes in the sidebar,
-plus a dedicated branch-history panel with search. Not on the Marketplace yet — install the `.vsix`
-from the [Releases page](https://github.com/LMS007/vscode-ggit/releases), or build one locally (see
-**Installing** below).
+A git UI for VS Code: Working Copy, Branches, Remotes, Tags, and Stashes in the sidebar, plus a
+branch-history panel with search.
 
-## Installing
+## Install
 
-**Prerequisites:** the `code` CLI on your `PATH` (see below if `code --version` fails). Node.js +
-npm only if you build the `.vsix` yourself.
+GGit isn't on the Marketplace. Install it from a `.vsix` on the
+[Releases page](https://github.com/LMS007/vscode-ggit/releases).
 
-1. Get a `.vsix`: download `vscode-ggit-<version>.vsix` from the
-   [Releases page](https://github.com/LMS007/vscode-ggit/releases), or build it yourself with
-   `npm install && npx vsce package` (it lands in the project root).
-2. Install it:
-   - **Locally:** `code --install-extension vscode-ggit-<version>.vsix`, or in VS Code:
-     Extensions view → `...` menu → **Install from VSIX...**.
-   - **On a remote host** (SSH, Codespaces, WSL): from a terminal on your *local* machine (not
-     inside the remote window) —
-     `code --remote ssh-remote+<host> --install-extension /local/path/to/vscode-ggit-<version>.vsix`.
-     This uploads and installs in one step. If you'd rather copy the file over yourself first
-     (`scp`), run the plain `code --install-extension <path-on-remote>` from the integrated
-     terminal *inside* the already-open remote VS Code window instead.
-3. Reload the window (Command Palette → **Developer: Reload Window**).
+1. Open the [latest release](https://github.com/LMS007/vscode-ggit/releases/latest) and, under
+   **Assets**, download `vscode-ggit-<version>.vsix`.
+   (Or: `gh release download -R LMS007/vscode-ggit -p '*.vsix'`.)
+2. Install it, either way:
+   - **In VS Code:** Extensions view → `...` menu → **Install from VSIX...** → pick the file.
+   - **From a terminal:** `code --install-extension vscode-ggit-<version>.vsix`
+3. Command Palette → **Developer: Reload Window**.
 
-Reinstalling after a change is the same steps — VS Code replaces the previous version in
-place.
+To update, install the newer `.vsix` the same way. It replaces the old version.
 
-### Getting the `code` CLI on your PATH
+**Remote hosts (SSH, WSL, Codespaces):** from a terminal on your *local* machine, run
+`code --remote ssh-remote+<host> --install-extension /local/path/to/vscode-ggit-<version>.vsix`.
+If the file is already on the remote, run `code --install-extension <path>` from the remote
+window's integrated terminal instead.
 
-Needed to run the install commands above.
+**`code` not found?** Command Palette → **Shell Command: Install 'code' command in PATH**.
 
-- **Easiest:** in VS Code, Command Palette → **Shell Command: Install 'code' command in PATH**.
-- **Manual (macOS):** `ln -s "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" ~/.local/bin/code`
-  (or any other directory already on your `PATH`).
-
-Verify with `which code` / `code --version` afterward.
+**Build it yourself:** `npm install && npx vsce package` writes the `.vsix` to the project root.
 
 ## Features
 
 **Working Copy**
-- Staged/unstaged file list; checkbox stages/unstages directly. A file with *both* staged and
-  unstaged changes (e.g. after staging one hunk) shows as two rows, tagged `(staged)`/`(unstaged)`.
-- Pinned "Create Commit" row: check-all/uncheck-all toggle, staged-file count, click to open the
-  Commit panel.
-- Toolbar: Apply Stash, Save Stash, Refresh.
-- Discard Local Changes, with confirmation wording tailored to what's actually happening
-  (delete/restore/revert). Multi-select for stash or discard.
-- Click a file for a diff; hover for "Open File". Right-click for **Ignore** (This Item / By
-  Name / By Extension — adds to `.gitignore`), Reveal in Explorer View, Reveal in Finder.
-- Auto-refreshes on file save/delete and on external changes to tracked files (not just git
-  operations).
+- Checkbox stages/unstages. A partly staged file shows as two rows, `(staged)` and `(unstaged)`.
+- Pinned **Create Commit** row: check/uncheck all, staged count, click to open the Commit panel.
+- Click a file for a diff. Right-click: Discard, Stash Selected Files, Show File History, Ignore
+  (item / name / extension), Copy Path, Reveal.
+- Auto-refreshes on file and repo changes.
 
-**Diffs** — right-click (or use the toolbar icon) inside a diff to **Stage Hunk** / **Unstage
-Hunk** — works on the selected range, or the hunk under the cursor.
+**Diffs**: **Stage Hunk** / **Unstage Hunk** from the diff's toolbar or context menu, for the
+selection or the hunk under the cursor.
 
-**Commit panel** — summary, optional description, Amend (pre-fills the last commit's message),
-live staged-file list with its own checkboxes and check-all/uncheck-all. Shows the branch you're
-committing to. Draft text persists across closing/reopening the panel or reloading the window.
+**Commit panel**: summary, description, Amend, staged-file checkboxes. The draft survives closing
+the panel and reloading the window.
 
 **Branches**
-- `/`-named branches group into folders; the folder holding your current branch expands
-  automatically.
-- Ahead/behind shown as `↑N`/`↓N`.
-- Green = checked out here. Blue = checked out in another `git worktree`, with that worktree's
-  folder name shown — GGit blocks checking these out, same as git itself.
-- Right-click: Create Branch From Here, Rename, Copy Name, Delete.
+- `/`-named branches group into folders. Ahead/behind shows as `↑N`/`↓N`.
+- Recently checked-out branches are pinned at the top (set how many with the thumbtack button).
+- Green = checked out here. Blue = checked out in another `git worktree`.
+- **Merge:** drag a branch onto the current one. Fast-forward, merge commit, `--no-ff`, squash, or
+  `--no-commit`.
+- Right-click: Create Branch / Create Tag from Here, Rename, Copy Name, Delete.
+- Toolbar: Create Branch, Fetch, Pull, Push, Sync, Rebase (`--autostash`).
 
-**Remotes** — browse and check out remote branches (folder-grouped). Search icon filters the list
-live, case-insensitive.
+**Remotes**: browse and check out remote branches, live search, Add Remote, Delete Remote Branch,
+and prune branches already deleted on the remote.
 
-**Stashes** — list, apply, delete (multi-select, oldest-first); shows files from
-`--include-untracked` stashes correctly.
+**Tags**: green = on a remote, purple = local only, orange = differs from the remote, cloud icon =
+remote only. Publish, Push, Delete (optionally on the remote too), Copy Name. Click a tag to open its
+history.
 
-**Conflicts** — appears above Working Copy during a rebase. Click a file to resolve inline; check
-it off once done. Continue/Skip/Abort in the toolbar.
+**Stashes**: apply or delete (multi-select). Stashes with untracked files show correctly.
 
-**Rebase** — pick a branch to rebase the current one onto; `--autostash` always on.
+**Conflicts**: appears during a rebase, merge, cherry-pick, or revert. Click a file to resolve it
+inline, check it off, then Continue/Commit, Skip, or Abort.
 
 **History panel**
-- Per-branch commit log, loaded a page at a time (not the whole history up front) — scroll to load
-  more.
-- Search bar: filters loaded commits by author name/email or message, case-insensitive. Loads at
-  least 1000 commits on first use; "Search older commits" goes deeper on demand, capped at 5000.
-- Toolbar: Create Branch, Fetch, Pull, Push (turns green when there's something to push), Sync,
-  Refresh, Rebase, Apply/Save Stash, Commit.
-- File list: click for a diff, or the open-file icon to edit the current working-tree copy
-  directly.
-- Arrow keys / Page Up/Down to navigate; selection follows the newest commit when the panel opens
-  or is brought to front, stays put on background refreshes.
-- Right-click a commit: Reset Branch to Here (Mixed/Hard), Cherry-Pick, Save Patch.
+- Per-branch commit log, loaded a page at a time. Unpushed commits are green. Double-click a commit
+  for its full message.
+- Search by author or message. **Show File History** (Working Copy right-click) narrows the log to
+  one file and follows renames.
+- Toolbar: Create Branch, Fetch, Pull, Push (offers a force push if rejected), Sync, Refresh,
+  Rebase, Apply/Save Stash, Commit. A remote picker appears when there's more than one remote.
+- Right-click a commit: Reset Branch to Here (Mixed/Hard), Cherry-Pick, Revert, Save Patch, Copy
+  Commit Hash.
+- Arrow keys and Page Up/Down to navigate.
 
-**Activity bar badge** — live count of changed files, kept current from startup.
+**Activity bar badge**: live count of changed files.
 
 ## Requirements
 
 - `git` on your `PATH`.
-- A single-root workspace rooted at (or inside) a git repo. Multi-root workspaces aren't
-  supported.
+- A single-root workspace inside a git repo. Multi-root workspaces aren't supported.
 
-## Known limitations / not implemented yet
+## Not implemented yet
 
-- **No git worktree switching** — Branches is worktree-*aware* (see above) but there's no UI to
-  create one or switch Working Copy to a different one.
-- **Only one History tab** at a time.
-- **No interactive rebase** — always plain/non-interactive; no reorder/squash/reword/drop.
-- **No plain merge** — only rebase; Conflicts only appears for a rebase in progress.
-- **No Discard Hunk** — Stage/Unstage Hunk exist, but not a destructive per-hunk revert.
-- **No tags.**
-- **No credential/SSH management** — relies on whatever already works from your terminal.
-- Search doesn't cover file paths or diff content, only author/message.
-- The Commit-launcher sidebar section (a big button above Working Copy) is implemented but
-  disabled pending a better design — see `src/commit/commitLauncherView.ts` and
-  `ggitCommitLauncher`'s `"when": "false"` in `package.json`.
+- Creating or switching to a `git worktree`. Branches shows worktrees but can't manage them.
+- More than one History tab at a time.
+- Interactive rebase (reorder, squash, reword, drop).
+- Discard Hunk.
+- History search by file path or diff content.
+- Credential/SSH management. GGit uses whatever already works from your terminal.
 
 ## Development
 
-- `npm run watch` — type checker + esbuild in watch mode.
-- `F5` launches an Extension Development Host with GGit loaded from source.
-- `npm run check-types` / `npm run lint` — same checks packaging runs.
-- **Releasing:** bump `version` in `package.json`, commit, push to `main`. The
-  [Release workflow](.github/workflows/release.yml) builds the `.vsix`, tags that commit
-  `v<version>`, and publishes a GitHub Release with it attached. Pushes to `package.json` that
-  don't change the version are no-ops. Set a `VSCE_PAT` repository secret to also publish to the
-  VS Code Marketplace (see the workflow for details).
+- `npm run watch`: type checker + esbuild in watch mode. `F5` launches an Extension Development
+  Host.
+- `npm run check-types` / `npm run lint`: the same checks packaging runs.
+- **Releasing:** bump `version` in `package.json` and push to `main`. The
+  [Release workflow](.github/workflows/release.yml) builds the `.vsix`, tags `v<version>`, and
+  publishes a GitHub Release. A `VSCE_PAT` repository secret also publishes to the Marketplace.
+- The Commit-launcher sidebar section (`src/commit/commitLauncherView.ts`) is built but hidden
+  (`"when": "false"` in `package.json`) pending a better design.
