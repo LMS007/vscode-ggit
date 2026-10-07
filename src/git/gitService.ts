@@ -488,6 +488,7 @@ export class GitService {
 	 * history with any remote branch, which walks its whole history -- the same unbounded case getLog
 	 * avoids, but only for that unusual shape of repo. */
 	async getUnpushedCommits(branchName: string, limit: number): Promise<string[]> {
+		assertNotOptionLike(branchName, 'ref');
 		const upstream = await this.getUpstreamBranch(branchName);
 		let range: string[];
 		if (upstream) {
@@ -533,6 +534,7 @@ export class GitService {
 	/** Creates a new local branch off `startPoint`. `track` sets it up to track `startPoint` for push/pull; `checkout` switches to it immediately. */
 	async createBranch(name: string, startPoint: string, options: { track: boolean; checkout: boolean }): Promise<void> {
 		assertNotOptionLike(name, 'branch name');
+		assertNotOptionLike(startPoint, 'starting point');
 		const trackFlag = options.track ? '--track' : '--no-track';
 		if (options.checkout) {
 			await this.git.raw(['checkout', '-b', name, trackFlag, startPoint]);
@@ -558,6 +560,9 @@ export class GitService {
 	 * still shown elsewhere (Branches view) via a cheap for-each-ref call, just not interleaved,
 	 * dimmed commits in this list. */
 	async getLog(branchName: string, options: { skip: number; limit: number }): Promise<{ commits: CommitInfo[]; hasMore: boolean }> {
+		// A tag fetched from a remote can be named e.g. "--output=/some/file" (branch names can't start
+		// with "-", tags can), and as git log's first positional that's an option that writes the file.
+		assertNotOptionLike(branchName, 'ref');
 		const { skip, limit } = options;
 		const out = await this.time(`getLog(${branchName}, skip=${skip}, limit=${limit}): git log`, () =>
 			this.git.raw([
@@ -595,6 +600,7 @@ export class GitService {
 		filePath: string,
 		options: { skip: number; limit: number }
 	): Promise<{ commits: CommitInfo[]; hasMore: boolean }> {
+		assertNotOptionLike(branchName, 'ref');
 		const { skip, limit } = options;
 		const out = await this.time(`getFileLog(${branchName}, ${filePath}, skip=${skip}, limit=${limit}): git log --follow`, () =>
 			this.git.raw([
