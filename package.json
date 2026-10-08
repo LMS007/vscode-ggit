@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "publisher": "kylekeating",
   "repository": {
     "type": "git",
@@ -154,6 +154,16 @@
         "command": "ggit.refresh",
         "title": "GGit: Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "ggit.workingCopyViewAsTree",
+        "title": "GGit: View Working Copy as Tree",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "ggit.workingCopyViewAsList",
+        "title": "GGit: View Working Copy as List",
+        "icon": "$(list-flat)"
       },
       {
         "command": "ggit.searchRemotes",
@@ -437,15 +447,25 @@
           "group": "navigation@1"
         },
         {
+          "command": "ggit.workingCopyViewAsTree",
+          "when": "view == ggitWorkingCopy && config.ggit.workingCopy.viewMode != 'tree'",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ggit.workingCopyViewAsList",
+          "when": "view == ggitWorkingCopy && config.ggit.workingCopy.viewMode == 'tree'",
+          "group": "navigation@2"
+        },
+        {
           "command": "ggit.refresh",
           "when": "view == ggitWorkingCopy",
-          "group": "navigation@2"
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
         {
           "command": "ggit.showFileHistory",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "0_history@1"
         },
         {
@@ -455,7 +475,7 @@
         },
         {
           "command": "ggit.openWorkingChangeFile",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && viewItem != 'createCommitAction'",
           "group": "inline"
         },
         {
@@ -465,37 +485,37 @@
         },
         {
           "submenu": "ggit.ignoreSubmenu",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "3_gitignore"
         },
         {
           "command": "ggit.copyRelativePath",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "4_copyPath@1"
         },
         {
           "command": "ggit.copyPath",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "4_copyPath@2"
         },
         {
           "command": "ggit.revealInExplorerView",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "5_reveal@1"
         },
         {
           "command": "ggit.revealInOS",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isMac",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isMac",
           "group": "5_reveal@2"
         },
         {
           "command": "ggit.revealInFileExplorer",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isWindows",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isWindows",
           "group": "5_reveal@2"
         },
         {
           "command": "ggit.openContainingFolder",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isLinux",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection) && isLinux",
           "group": "5_reveal@2"
         },
         {
@@ -603,6 +623,24 @@
           "group": "1_ignore@3"
         }
       ]
+    },
+    "configuration": {
+      "title": "GGit",
+      "properties": {
+        "ggit.workingCopy.viewMode": {
+          "type": "string",
+          "enum": [
+            "list",
+            "tree"
+          ],
+          "enumDescriptions": [
+            "Show changed files as a flat list, with each file's folder as its description.",
+            "Show changed files nested under their folders."
+          ],
+          "default": "list",
+          "description": "How the Working Copy view lays out changed files."
+        }
+      }
     }
   },
   "scripts": {
