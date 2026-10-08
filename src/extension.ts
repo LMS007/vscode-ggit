@@ -42,7 +42,14 @@ import { CreateTagPanel } from './tag/createTagPanel';
 import { TagPanel } from './tag/tagPanel';
 import { TagDialogMode } from './tag/tagProtocol';
 import { WorkingChangeDecorationProvider } from './tree/workingChangeDecoration';
-import { isCreateCommitNode, isWorkingChangeFile, WorkingCopyNode, WorkingCopyTreeProvider } from './tree/workingCopyTreeProvider';
+import {
+	collectWorkingChangeFiles,
+	isCreateCommitNode,
+	isFolderNode,
+	isWorkingChangeFile,
+	WorkingCopyNode,
+	WorkingCopyTreeProvider,
+} from './tree/workingCopyTreeProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
 	const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -78,6 +85,10 @@ export function activate(context: vscode.ExtensionContext): void {
 	const workingCopyView = vscode.window.createTreeView('ggitWorkingCopy', {
 		treeDataProvider: workingCopyProvider,
 		canSelectMany: true,
+		// Tree mode's folder checkboxes stage/unstage the whole folder in one git call (see
+		// onDidChangeCheckboxState below) -- VS Code's automatic parent/child propagation would
+		// instead fire a separate event item for every file beneath it.
+		manageCheckboxStateManually: true,
 	});
 	// VS Code only shows a context-menu item when its `when` clause holds for *every* row in the
 	// right-clicked selection, so gating Working Copy's items on `viewItem != 'createCommitAction'`
@@ -85,7 +96,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	// package.json exempt that row only while it's selected alongside real files -- right-clicked on
 	// its own it still gets no menu, and the handlers drop it (see resolveWorkingChangeSelection).
 	workingCopyView.onDidChangeSelection(e => {
-		const mixed = e.selection.some(isCreateCommitNode) && e.selection.some(isWorkingChangeFile);
+		const mixed = e.selection.some(isCreateCommitNode) && e.selection.some(n => !isCreateCommitNode(n));
 		void vscode.commands.executeCommand('setContext', 'ggit.workingCopyMixedSelection', mixed);
 	});
 
@@ -289,6 +300,14 @@ export function activate(context: vscode.ExtensionContext): void {
 						await gitService.stageAll();
 					} else {
 						await gitService.unstageAll();
+					}
+				} else if (isFolderNode(node)) {
+					// `git add`/`git reset` on a directory covers everything beneath it, deletions included.
+					output.appendLine(`checkbox: folder "${node.path}" -> ${stateLabel}`);
+					if (state === vscode.TreeItemCheckboxState.Checked) {
+						await gitService.stageFile(node.path);
+					} else {
+						await gitService.unstageFile(node.path);
 					}
 				} else if (isWorkingChangeFile(node)) {
 					output.appendLine(`checkbox: "${node.path}" (row was ${node.state}) -> ${stateLabel}`);
@@ -638,6 +657,18 @@ export function activate(context: vscode.ExtensionContext): void {
 				);
 			}
 		),
+
+		vscode.commands.registerCommand('ggit.workingCopyViewAsTree', () =>
+			vscode.workspace.getConfiguration('ggit').update('workingCopy.viewMode', 'tree', vscode.ConfigurationTarget.Global)
+		),
+		vscode.commands.registerCommand('ggit.workingCopyViewAsList', () =>
+			vscode.workspace.getConfiguration('ggit').update('workingCopy.viewMode', 'list', vscode.ConfigurationTarget.Global)
+		),
+		vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('ggit.workingCopy.viewMode')) {
+				workingCopyProvider.refresh();
+			}
+		}),
 
 		vscode.commands.registerCommand('ggit.openWorkingChangeFile', async (file: WorkingCopyNode) => {
 			if (!isWorkingChangeFile(file)) {
@@ -1027,13 +1058,14 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 /** Normalizes a Working Copy context-menu invocation into just the real files, dropping the pinned
- * Create Commit row if it's part of the selection. package.json only offers the menu on that row
+ * Create Commit row if it's part of the selection and expanding tree-mode folder rows into every file
+ * beneath them (deduplicated, since a folder and a file inside it can both be selected). package.json only offers the menu on that row
  * while it's selected alongside real files (see ggit.workingCopyMixedSelection in activate()) --
  * VS Code's `when`-clause matching applies to every item in the selection, so the menu can't be
  * hidden for that one row without hiding it for a select-all too -- which leaves dropping it here. */
 function resolveWorkingChangeSelection(file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]): WorkingChangeFile[] {
 	const nodes = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
-	return nodes.filter(isWorkingChangeFile);
+	return [...new Set(nodes.flatMap(collectWorkingChangeFiles))];
 }
 
 /** For the single-target commands (Copy Path, Reveal): the right-clicked file itself, or -- when the
@@ -1043,7 +1075,11 @@ function resolveSingleWorkingChangeFile(
 	file: WorkingCopyNode,
 	selectedFiles?: WorkingCopyNode[]
 ): WorkingChangeFile | undefined {
-	return isWorkingChangeFile(file) ? file : resolveWorkingChangeSelection(file, selectedFiles)[0];
+	if (isWorkingChangeFile(file)) {
+		return file;
+	}
+	const nodes = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
+	return nodes.find(isWorkingChangeFile);
 }
 
 /** Tree items don't have a native double-click event, so we detect one ourselves: two clicks on the
