@@ -185,6 +185,10 @@
         "title": "Delete Remote Branch…"
       },
       {
+        "command": "ggit.removeRemote",
+        "title": "Remove Remote…"
+      },
+      {
         "command": "ggit.stageAll",
         "title": "GGit: Stage All",
         "icon": "$(add)"
@@ -572,11 +576,20 @@
           "command": "ggit.deleteRemoteBranch",
           "when": "view == ggitRemotes && viewItem == remoteBranch",
           "group": "9_delete@1"
+        },
+        {
+          "command": "ggit.removeRemote",
+          "when": "view == ggitRemotes && viewItem == remoteRoot",
+          "group": "9_delete@1"
         }
       ],
       "commandPalette": [
         {
           "command": "ggit.deleteRemoteBranch",
+          "when": "false"
+        },
+        {
+          "command": "ggit.removeRemote",
           "when": "false"
         },
         {

@@ -53,7 +53,8 @@ the panel and reloading the window.
 - Right-click: Create Branch / Create Tag from Here, Rename, Copy Name, Delete.
 - Toolbar: Create Branch, Fetch, Pull, Push, Sync, Rebase (`--autostash`).
 
-**Remotes**: browse and check out remote branches, live search, Add Remote, Delete Remote Branch.
+**Remotes**: browse and check out remote branches, live search, Add Remote, Remove Remote
+(right-click a remote), Delete Remote Branch.
 **Sync** fetches every remote: downloads new branches and removes ones deleted on the remote.
 
 **Tags**: green = on a remote, purple = local only, orange = differs from the remote, cloud icon =

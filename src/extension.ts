@@ -387,6 +387,41 @@ export function activate(context: vscode.ExtensionContext): void {
 			AddRemotePanel.createOrShow(context, gitService, refreshAll);
 		}),
 
+		// Offered on a remote's own top-level row (contextValue 'remoteRoot', see RemotesTreeProvider), so
+		// a node whose id has a "/" is a branch-path folder under it, not a remote.
+		vscode.commands.registerCommand('ggit.removeRemote', async (node?: BranchTreeNode<RemoteBranchInfo>) => {
+			if (node?.kind !== 'folder' || node.id.includes('/')) {
+				return;
+			}
+			const remote = node.name;
+			let url: string | undefined;
+			let trackers: string[];
+			try {
+				[url, trackers] = await Promise.all([gitService.getRemoteUrl(remote), gitService.getLocalBranchesTrackingRemote(remote)]);
+			} catch (err) {
+				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				return;
+			}
+			const trackerNote =
+				trackers.length > 0
+					? ` Your local ${trackers.map(t => `"${t}"`).join(', ')} ${trackers.length === 1 ? 'tracks' : 'track'} it and will lose ${trackers.length === 1 ? 'its' : 'their'} upstream; the branches themselves stay.`
+					: '';
+			const confirmed = await vscode.window.showWarningMessage(
+				`Remove remote "${remote}"?`,
+				{
+					modal: true,
+					detail:
+						`This removes ${url ? `${remote} (${url})` : remote} from this repo, along with its branches in the Remotes view. ` +
+						`Nothing on the remote itself is deleted, and Add Remote can bring it back.${trackerNote}`,
+				},
+				'Remove Remote'
+			);
+			if (confirmed !== 'Remove Remote') {
+				return;
+			}
+			return runGitOperation(`Removing ${remote}…`, () => gitService.removeRemote(remote), refreshAllAndRemoteTags);
+		}),
+
 		// Refuses the remote's default branch outright -- GitHub rejects that delete itself, but a plain
 		// git server happily does it (verified against a bare repo). Only possible when the default is
 		// recorded locally (see getRemoteDefaultBranch); otherwise the confirmation is the only guard.

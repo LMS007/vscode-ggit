@@ -247,6 +247,16 @@ export class GitService {
 			.map(([name]) => name);
 	}
 
+	/** Local branches whose upstream is any branch on `remote`. */
+	async getLocalBranchesTrackingRemote(remote: string): Promise<string[]> {
+		const out = await this.git.raw(['for-each-ref', `--format=%(refname:short)${FIELD_SEP}%(upstream:remotename)`, 'refs/heads']);
+		return out
+			.split('\n')
+			.map(line => line.split(FIELD_SEP))
+			.filter(([, upstreamRemote]) => upstreamRemote === remote)
+			.map(([name]) => name);
+	}
+
 	/** `git fetch --prune`: downloads every branch `remote` has, new ones included, and drops the
 	 * remote-tracking branches it no longer has -- e.g. ones GitHub deleted after a PR merged, which
 	 * nothing else would tell this repo about. Local branches are never touched, even one that tracked
@@ -269,6 +279,19 @@ export class GitService {
 	async addRemote(name: string, url: string): Promise<void> {
 		assertNotOptionLike(name, 'remote name');
 		await this.git.raw(['remote', 'add', name, url]);
+	}
+
+	/** `git remote remove` -- drops the remote's config and its remote-tracking branches, and unsets the
+	 * upstream of every local branch tracking it. Local branches and tags stay; the remote itself is
+	 * untouched. */
+	async removeRemote(name: string): Promise<void> {
+		assertNotOptionLike(name, 'remote name');
+		await this.git.raw(['remote', 'remove', name]);
+	}
+
+	async getRemoteUrl(name: string): Promise<string | undefined> {
+		assertNotOptionLike(name, 'remote name');
+		return (await this.git.raw(['remote', 'get-url', name])).trim() || undefined;
 	}
 
 	/** Returns the current branch name, or undefined if HEAD is detached. */
