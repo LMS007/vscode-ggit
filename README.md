@@ -53,12 +53,14 @@ the panel and reloading the window.
 - Right-click: Create Branch / Create Tag from Here, Rename, Copy Name, Delete.
 - Toolbar: Create Branch, Fetch, Pull, Push, Sync, Rebase (`--autostash`).
 
-**Remotes**: browse and check out remote branches, live search, Add Remote, Delete Remote Branch,
-and prune branches already deleted on the remote.
+**Remotes**: browse and check out remote branches, live search, Add Remote, Delete Remote Branch.
+**Sync** fetches every remote: downloads new branches and removes ones deleted on the remote.
 
 **Tags**: green = on a remote, purple = local only, orange = differs from the remote, cloud icon =
-remote only. Publish, Push, Delete (optionally on the remote too), Copy Name. Click a tag to open its
-history.
+not downloaded yet. Labels only call out what's off (`≠ upstream`, `not on upstream`, `local only`,
+`not downloaded`); hover for each remote's status. Publish, Push, Delete (optionally on the remote
+too), Copy Name. Click a tag to open its history. **Download New Tags** fetches tags from every
+remote; it never deletes or overwrites a local tag. Pull and Sync download new tags too.
 
 **Stashes**: apply or delete (multi-select). Stashes with untracked files show correctly.
 

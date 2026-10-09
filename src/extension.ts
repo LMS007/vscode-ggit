@@ -426,24 +426,48 @@ export function activate(context: vscode.ExtensionContext): void {
 			return runGitOperation(`Deleting ${name}…`, () => gitService.deleteRemoteBranch(name), refreshAll);
 		}),
 
-		vscode.commands.registerCommand('ggit.pruneRemoteBranches', async () => {
-			const pruned: string[] = [];
-			let finished = false;
+		// Each remote fetched on its own rather than `git fetch --all --prune`, so one that can't be
+		// reached (offline, auth, a bad URL) doesn't hide whether the others synced, and the error names
+		// it. A fetch can bring in tags too, hence refreshing the Tags view's remote half afterwards.
+		vscode.commands.registerCommand('ggit.syncRemotes', async () => {
+			const failures: string[] = [];
+			let added: string[] = [];
+			let removed: string[] = [];
+			let anySynced = false;
 			await runGitOperation(
-				'Removing remote branches deleted on the remote…',
+				'Syncing remote branches…',
 				async () => {
-					for (const remote of await gitService.listRemotes()) {
-						pruned.push(...(await gitService.pruneRemote(remote)));
+					const remotes = await gitService.listRemotes();
+					if (remotes.length === 0) {
+						throw new Error('No remote configured -- add one from the Remotes view first.');
 					}
-					finished = true;
+					const listAll = async () =>
+						new Set((await Promise.all(remotes.map(r => gitService.listRemoteBranches(r)))).flat().map(b => b.name));
+					const before = await listAll();
+					for (const remote of remotes) {
+						try {
+							await gitService.syncRemote(remote);
+							anySynced = true;
+						} catch (err) {
+							failures.push(`${remote} (${(err as Error).message.trim().split('\n')[0]})`);
+						}
+					}
+					const after = await listAll();
+					added = [...after].filter(name => !before.has(name));
+					removed = [...before].filter(name => !after.has(name));
 				},
-				refreshAll
+				refreshAllAndRemoteTags
 			);
-			if (finished) {
+			if (failures.length > 0) {
+				void vscode.window.showErrorMessage(`GGit: Couldn't sync ${failures.join(', ')}`);
+			}
+			if (anySynced) {
+				const changes = [
+					added.length > 0 ? `${added.length} new: ${added.join(', ')}` : undefined,
+					removed.length > 0 ? `${removed.length} deleted on the remote, removed: ${removed.join(', ')}` : undefined,
+				].filter(Boolean);
 				void vscode.window.showInformationMessage(
-					pruned.length === 0
-						? 'GGit: Nothing to remove -- every remote branch listed still exists on its remote.'
-						: `GGit: Removed ${pruned.length} remote branch${pruned.length === 1 ? '' : 'es'} already deleted on the remote: ${pruned.join(', ')}`
+					`GGit: Remote branches synced -- ${changes.length > 0 ? changes.join('; ') : 'no branches added or removed'}.`
 				);
 			}
 		}),
@@ -886,9 +910,41 @@ export function activate(context: vscode.ExtensionContext): void {
 			BranchHistoryPanel.createOrShow(context, gitService, tagName);
 		}),
 
-		vscode.commands.registerCommand('ggit.refreshTags', () => {
-			tagsProvider.refresh();
-			tagsProvider.refreshRemotes();
+		// Download-only on purpose: unlike remote branches, git keeps no separate copy of a remote's tags,
+		// so a local tag no remote has could just as well be one never pushed -- deleting those would
+		// lose work. The view already marks them "local only", and Delete Tag removes one on request.
+		vscode.commands.registerCommand('ggit.syncTags', async () => {
+			const failures: string[] = [];
+			let added: string[] = [];
+			let anySynced = false;
+			await runGitOperation(
+				'Downloading new tags…',
+				async () => {
+					const remotes = await gitService.listRemotes();
+					if (remotes.length === 0) {
+						throw new Error('No remote configured -- add one from the Remotes view first.');
+					}
+					const before = new Set((await gitService.listTags()).map(t => t.name));
+					for (const remote of remotes) {
+						try {
+							await gitService.fetchTags(remote);
+							anySynced = true;
+						} catch (err) {
+							failures.push(`${remote} (${(err as Error).message.trim().split('\n')[0]})`);
+						}
+					}
+					added = (await gitService.listTags()).map(t => t.name).filter(name => !before.has(name));
+				},
+				refreshAllAndRemoteTags
+			);
+			if (failures.length > 0) {
+				void vscode.window.showErrorMessage(`GGit: Couldn't download tags from ${failures.join(', ')}`);
+			}
+			if (anySynced) {
+				void vscode.window.showInformationMessage(
+					added.length > 0 ? `GGit: Downloaded ${added.length} new tag${added.length === 1 ? '' : 's'}: ${added.join(', ')}.` : 'GGit: No new tags to download.'
+				);
+			}
 		}),
 
 		vscode.commands.registerCommand('ggit.publishTag', (node?: TagNode) => openTagDialog('publish', node)),

@@ -22,8 +22,8 @@ export interface TagRemoteState {
 /** Lists local tags straight away, then asks each remote which tags it has (`git ls-remote`, a
  * network call) to fill in where each one lives. That remote half is cached rather than re-asked on
  * every refresh() -- refreshAll runs on every .git change, far too often for a network round trip --
- * and only re-fetched via refreshRemotes(): when the view first loads, from its Refresh button, and
- * after fetch/pull/sync or a tag action that changed a remote. */
+ * and only re-fetched via refreshRemotes(): when the view first loads, after its Download New Tags
+ * button, and after fetch/pull/sync or a tag action that changed a remote. */
 export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -128,8 +128,8 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 		if (!node.local) {
 			// Remote-only: nothing local to show history for until it's fetched, so no click command.
 			item.iconPath = new vscode.ThemeIcon('cloud', new vscode.ThemeColor('descriptionForeground'));
-			item.description = `${having.map(r => r.remote).join(', ')} only`;
-			item.tooltip = `${node.name} is only on ${having.map(r => r.remote).join(', ')} -- fetch to get it locally.`;
+			item.description = 'not downloaded';
+			item.tooltip = `${node.name} is on ${having.map(r => r.remote).join(', ')} but not downloaded yet -- Download New Tags gets it.`;
 			item.contextValue = 'tag remoteOnly';
 			return item;
 		}
@@ -150,10 +150,18 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 			color = 'charts.purple';
 		}
 		item.iconPath = new vscode.ThemeIcon('tag', color ? new vscode.ThemeColor(color) : undefined);
-		if (same.length > 0 || different.length > 0) {
-			item.description = [...same, ...different.map(r => `≠ ${r}`)].join(', ');
-		} else if (anyKnown) {
-			item.description = 'local only';
+		// Only what's off gets a label -- a tag matching every remote has none, so the common case (often
+		// every tag, with one remote) stays quiet. A remote that hasn't answered isn't "not on" it, just
+		// unknown; the tooltip says which, and the view's header already reports one it couldn't reach.
+		const knownMissing = node.remotes.filter(r => r.known && !r.tag).map(r => r.remote);
+		if (same.length === 0 && different.length === 0) {
+			item.description = anyKnown ? 'local only' : undefined;
+		} else {
+			const notes = [
+				...different.map(r => `≠ ${r}`),
+				knownMissing.length > 0 ? `not on ${knownMissing.join(', ')}` : undefined,
+			].filter(Boolean);
+			item.description = notes.length > 0 ? notes.join(' · ') : undefined;
 		}
 
 		const tooltip = new vscode.MarkdownString();

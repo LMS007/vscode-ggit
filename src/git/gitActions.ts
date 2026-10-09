@@ -47,11 +47,27 @@ export async function fetchCurrentBranch(gitService: GitService, preferredRemote
 	await gitService.fetchBranch(target);
 }
 
+/** Every remote's new tags, after a pull -- `git pull <remote> <branch>` names the branch, which skips
+ * git's usual download of the tags on the commits it brings in. From every remote, not just the one
+ * pulled from: a repo's remotes should agree on their tags, and fetchTags never overwrites a local one
+ * that differs. Best-effort, since the pull itself already succeeded -- a remote that can't be reached
+ * is logged rather than failing it. */
+async function fetchTagsFromAllRemotes(gitService: GitService): Promise<void> {
+	for (const remote of await gitService.listRemotes()) {
+		try {
+			await gitService.fetchTags(remote);
+		} catch (err) {
+			gitService.log(`fetchTagsFromAllRemotes: couldn't fetch tags from ${remote}: ${(err as Error).message.trim()}`);
+		}
+	}
+}
+
 export async function pullCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
 	const current = await gitService.getCurrentBranch();
 	requireCurrentBranch(current);
 	const target = await resolveTargetRemoteBranch(gitService, current, preferredRemote);
 	await gitService.pullBranch(target);
+	await fetchTagsFromAllRemotes(gitService);
 }
 
 /** Resolves which remote a publish should target -- a QuickPick (VS Code's own "input box with a
@@ -140,6 +156,7 @@ export async function syncCurrentBranch(gitService: GitService, preferredRemote?
 
 	const target = await resolveTargetRemoteBranch(gitService, current, preferredRemote);
 	await gitService.pullBranch(target);
+	await fetchTagsFromAllRemotes(gitService);
 
 	const upstream = await gitService.getUpstreamBranch(current);
 	if (upstream) {

@@ -247,16 +247,13 @@ export class GitService {
 			.map(([name]) => name);
 	}
 
-	/** Drops remote-tracking branches whose branch is gone from `remote` -- deleted there, e.g. by
-	 * GitHub after a PR merges, but still listed here since nothing told this repo. `git remote prune`
-	 * asks the remote but fetches nothing. Returns the names it removed, from its "[pruned]" lines. */
-	async pruneRemote(remote: string): Promise<string[]> {
+	/** `git fetch --prune`: downloads every branch `remote` has, new ones included, and drops the
+	 * remote-tracking branches it no longer has -- e.g. ones GitHub deleted after a PR merged, which
+	 * nothing else would tell this repo about. Local branches are never touched, even one that tracked
+	 * a branch now gone. */
+	async syncRemote(remote: string): Promise<void> {
 		assertNotOptionLike(remote, 'remote name');
-		const out = await this.time(`pruneRemote(${remote})`, () => this.git.raw(['remote', 'prune', remote]));
-		return out
-			.split('\n')
-			.map(line => line.match(/\[pruned\]\s+(\S+)/)?.[1])
-			.filter((name): name is string => name !== undefined);
+		await this.time(`syncRemote(${remote}): fetch --prune`, () => this.git.raw(['fetch', '--prune', remote]));
 	}
 
 	/** Every remote configured for this repo (e.g. ["origin", "upstream"]) -- drives the Remotes view
@@ -332,6 +329,24 @@ export class GitService {
 				const [name, sha, peeled, type, date, subject] = line.split(FIELD_SEP);
 				return { name, sha, commit: peeled || sha, annotated: type === 'tag', subject: subject ?? '', date };
 			});
+	}
+
+	/** Downloads every tag `remote` has that this repo doesn't. Tags only -- an explicit refspec, since
+	 * --tags would fetch every branch too -- and it never deletes or overwrites a local tag: one that
+	 * points somewhere other than the remote's copy is kept, and git still fetches the rest. git exits
+	 * non-zero over that "would clobber existing tag" rejection, but the Tags view already flags the
+	 * difference (≠), so a rejection of only that kind isn't a failure. */
+	async fetchTags(remote: string): Promise<void> {
+		assertNotOptionLike(remote, 'remote name');
+		try {
+			await this.time(`fetchTags(${remote})`, () => this.git.raw(['fetch', remote, 'refs/tags/*:refs/tags/*']));
+		} catch (err) {
+			const rejected = (err as Error).message.split('\n').filter(line => line.includes('[rejected]'));
+			if (rejected.length === 0 || !rejected.every(line => line.includes('would clobber existing tag'))) {
+				throw err;
+			}
+			this.logger?.(`fetchTags(${remote}): kept local tags that differ from ${remote}'s: ${rejected.join('; ')}`);
+		}
 	}
 
 	/** The tags `remote` has right now, keyed by name. A network call -- unlike remote branches, git
