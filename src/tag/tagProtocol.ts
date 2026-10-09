@@ -22,6 +22,7 @@ export type TagHostMessage = { type: 'init'; state: TagDialogState } | { type: '
 
 export type TagWebviewMessage =
 	| { type: 'ready' }
-	/** `remote` is undefined for a delete that's local-only. */
-	| { type: 'submit'; remote: string | undefined }
+	/** `remote` is undefined for a delete that's local-only. `allRemotes` (delete only) means every
+	 * offered remote rather than just `remote`. */
+	| { type: 'submit'; remote: string | undefined; allRemotes: boolean }
 	| { type: 'cancel' };

@@ -59,9 +59,9 @@ the panel and reloading the window.
 
 **Tags**: green = on a remote, purple = local only, orange = differs from the remote, cloud icon =
 not downloaded yet. Labels only call out what's off (`≠ upstream`, `not on upstream`, `local only`,
-`not downloaded`); hover for each remote's status. Publish, Push, Delete (optionally on the remote
-too), Copy Name. Click a tag to open its history. **Download New Tags** fetches tags from every
-remote; it never deletes or overwrites a local tag. Pull and Sync download new tags too.
+`not downloaded`); hover for each remote's status. Publish, Push, Delete (optionally on one remote
+or all of them), Copy Name. Click a tag to open its history. **Download New Tags** fetches tags
+from every remote; it never deletes or overwrites a local tag. Pull and Sync download new tags too.
 
 **Stashes**: apply or delete (multi-select). Stashes with untracked files show correctly.
 

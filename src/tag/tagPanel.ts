@@ -101,27 +101,37 @@ export class TagPanel {
 				this.panel.dispose();
 				break;
 			case 'submit': {
-				const target = msg.remote === undefined ? undefined : this.offeredRemotes().find(r => r.remote === msg.remote);
-				if (msg.remote !== undefined && !target) {
+				const offered = this.offeredRemotes();
+				const targets =
+					msg.allRemotes && this.mode === 'delete'
+						? offered
+						: offered.filter(r => msg.remote !== undefined && r.remote === msg.remote);
+				if (msg.remote !== undefined && targets.length === 0) {
 					return;
 				}
 				const { name, local } = this.node;
 				try {
 					await vscode.window.withProgress(
 						{ location: vscode.ProgressLocation.Notification, title: `${TITLES[this.mode]} ${name}…` },
-						() => this.run(name, local !== undefined, target)
+						() => this.run(name, local !== undefined, targets)
 					);
 					this.panel.dispose();
-					this.onDone(target !== undefined);
+					this.onDone(targets.length > 0);
 				} catch (err) {
-					this.post({ type: 'error', message: explainPushError((err as Error).message, target?.remote, name) });
+					this.post({ type: 'error', message: explainPushError((err as Error).message, targets[0]?.remote, name) });
+					// An all-remotes delete that failed partway may still have deleted it from some of them --
+					// refresh so the Tags view stops showing it there.
+					if (targets.length > 1) {
+						this.onDone(true);
+					}
 				}
 				break;
 			}
 		}
 	}
 
-	private async run(name: string, hasLocal: boolean, target: TagRemoteState | undefined): Promise<void> {
+	private async run(name: string, hasLocal: boolean, targets: TagRemoteState[]): Promise<void> {
+		const target = targets[0];
 		switch (this.mode) {
 			case 'publish':
 				if (!target) {
@@ -135,19 +145,38 @@ export class TagPanel {
 				}
 				await this.gitService.pushTag(target.remote, name, { replacing: target.tag.sha });
 				return;
-			case 'delete':
+			case 'delete': {
 				if (!target && !hasLocal) {
 					throw new Error('Choose the remote to delete it from.');
 				}
-				// Remote first: if that fails (offline, no permission), the local tag is still there to
-				// retry with, rather than half-done with nothing left to point at.
-				if (target) {
-					await this.gitService.deleteRemoteTag(target.remote, name);
+				// Remotes first: if one fails (offline, no permission), the local tag is still there to
+				// retry with, rather than half-done with nothing left to point at. Each remote is tried even
+				// after one fails, so an all-remotes delete gets as far as it can -- and one that turns out
+				// not to have the tag (it couldn't be checked, or an earlier attempt already got it) counts
+				// as done, which GitHub reports as an error but a plain git server doesn't.
+				const failures: string[] = [];
+				for (const t of targets) {
+					try {
+						await this.gitService.deleteRemoteTag(t.remote, name);
+					} catch (err) {
+						const message = (err as Error).message;
+						if (!/remote ref does not exist/.test(message)) {
+							failures.push(targets.length > 1 ? `${t.remote}: ${firstErrorLine(message)}` : message);
+						}
+					}
+				}
+				if (failures.length > 0) {
+					throw new Error(
+						targets.length > 1
+							? `Couldn't delete it from ${failures.join('; ')}.${hasLocal ? ' The local tag was kept, so you can retry.' : ''}`
+							: failures[0]
+					);
 				}
 				if (hasLocal) {
 					await this.gitService.deleteTag(name);
 				}
 				return;
+			}
 		}
 	}
 
@@ -310,6 +339,23 @@ export class TagPanel {
 			outline: 1px solid var(--vscode-focusBorder);
 			outline-offset: 1px;
 		}
+		.checkbox-field input:disabled,
+		.checkbox-field input:disabled + .checkbox-text {
+			opacity: 0.55;
+			cursor: default;
+		}
+		/* Under the Remote dropdown it controls, rather than above a field like the delete checkbox. */
+		#allRemotesField {
+			margin: 10px 0 0 0;
+		}
+		/* The .field rule above would otherwise turn this label into a bold block. */
+		#allRemotesField.checkbox-field {
+			display: flex;
+			font-weight: normal;
+		}
+		#allRemotesField[hidden] {
+			display: none;
+		}
 		.checkbox-field .checkbox-text strong {
 			display: block;
 			font-weight: 600;
@@ -393,6 +439,13 @@ export class TagPanel {
 			<div class="field" id="remoteField" hidden>
 				<label for="remote">Remote</label>
 				<select id="remote"></select>
+				<label class="checkbox-field" id="allRemotesField" for="allRemotes" hidden>
+					<input id="allRemotes" type="checkbox" />
+					<span class="checkbox-text">
+						<strong>All remotes</strong>
+						<span id="allRemotesDesc"></span>
+					</span>
+				</label>
 			</div>
 
 			<p id="note"></p>
@@ -422,6 +475,14 @@ function explainPushError(message: string, remote: string | undefined, name: str
 		return `${remote} already has a tag named "${name}". Refresh the Tags view; if it's different from yours, Push Tag can overwrite it.`;
 	}
 	return message;
+}
+
+/** The line of a failed push's output that says what went wrong -- skipping git's leading "To <url>". */
+function firstErrorLine(message: string): string {
+	return message
+		.split('\n')
+		.map(line => line.trim())
+		.find(line => line && !line.startsWith('To ')) ?? message.trim();
 }
 
 function getNonce(): string {

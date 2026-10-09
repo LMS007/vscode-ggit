@@ -16,6 +16,9 @@ const deleteRemoteLabelEl = document.getElementById('deleteRemoteLabel')!;
 const deleteRemoteDescEl = document.getElementById('deleteRemoteDesc')!;
 const remoteField = document.getElementById('remoteField')!;
 const remoteSelect = document.getElementById('remote') as HTMLSelectElement;
+const allRemotesField = document.getElementById('allRemotesField')!;
+const allRemotesCheckbox = document.getElementById('allRemotes') as HTMLInputElement;
+const allRemotesDescEl = document.getElementById('allRemotesDesc')!;
 const noteEl = document.getElementById('note')!;
 const errorEl = document.getElementById('error')!;
 const submitButton = document.getElementById('submitButton') as HTMLButtonElement;
@@ -42,6 +45,11 @@ function usesRemote(): boolean {
 	return state.mode !== 'delete' || !state.local || deleteRemoteCheckbox.checked;
 }
 
+/** Delete from every offered remote instead of the picked one -- only offered with 2+ of them. */
+function deletingFromAll(): boolean {
+	return usesRemote() && !allRemotesField.hidden && allRemotesCheckbox.checked;
+}
+
 /** Everything that depends on which remote is picked (or whether one is) -- re-run on every change. */
 function render(): void {
 	if (!state) {
@@ -49,7 +57,8 @@ function render(): void {
 	}
 	const { mode, tagName, local } = state;
 	const remote = selectedRemote();
-	remoteSelect.disabled = !usesRemote();
+	remoteSelect.disabled = !usesRemote() || deletingFromAll();
+	allRemotesCheckbox.disabled = !usesRemote();
 
 	warningEl.hidden = true;
 	noteEl.textContent = '';
@@ -61,7 +70,12 @@ function render(): void {
 				: `${remote.name}'s "${tagName}" points at ${short(remote.commit)}; yours points at ${short(local.commit)}.`) +
 			` Pushing overwrites the remote's tag (a force push). Anyone who already fetched the old one keeps it until they delete it and fetch again.`;
 	}
-	if (usesRemote() && remote && !remote.known) {
+	if (deletingFromAll()) {
+		const unknown = state.remotes.filter(r => !r.known).map(r => r.name);
+		if (unknown.length > 0) {
+			noteEl.textContent = `Couldn't check whether ${unknown.join(', ')} ${unknown.length === 1 ? 'has' : 'have'} this tag. GGit tries anyway.`;
+		}
+	} else if (usesRemote() && remote && !remote.known) {
 		noteEl.textContent =
 			mode === 'publish'
 				? `Couldn't check whether ${remote.name} already has this tag. If it does, git refuses rather than overwriting it.`
@@ -107,6 +121,10 @@ function renderInit(next: TagDialogState): void {
 		'Removes it from the remote too, for everyone who fetches from it. Anyone who already fetched it keeps their own copy.';
 
 	remoteField.hidden = remotes.length === 0;
+	// Pointless with a single remote to choose from -- the dropdown already is "all of them".
+	allRemotesField.hidden = mode !== 'delete' || remotes.length < 2;
+	allRemotesCheckbox.checked = false;
+	allRemotesDescEl.textContent = `Deletes it from ${remotes.map(r => r.name).join(', ')}.`;
 	remoteSelect.innerHTML = '';
 	for (const r of remotes) {
 		const option = document.createElement('option');
@@ -131,10 +149,11 @@ function submit(): void {
 	}
 	errorEl.textContent = '';
 	submitButton.disabled = true;
-	vscodeApi.postMessage({ type: 'submit', remote: usesRemote() ? remoteSelect.value : undefined });
+	vscodeApi.postMessage({ type: 'submit', remote: usesRemote() ? remoteSelect.value : undefined, allRemotes: deletingFromAll() });
 }
 
 deleteRemoteCheckbox.addEventListener('change', render);
+allRemotesCheckbox.addEventListener('change', render);
 remoteSelect.addEventListener('change', render);
 submitButton.addEventListener('click', submit);
 cancelButton.addEventListener('click', () => vscodeApi.postMessage({ type: 'cancel' }));
