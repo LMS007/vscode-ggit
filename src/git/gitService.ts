@@ -1209,8 +1209,12 @@ export class GitService {
 		await this.git.raw(['merge', '--abort']);
 	}
 
+	/** Fetches every branch from `remote`. Raw rather than simple-git's fetch(), which only passes the
+	 * remote along when a branch comes with it -- fetch(remote) alone runs a bare `git fetch`, which
+	 * fetches the current branch's upstream remote (usually origin), never a just-added second remote. */
 	async fetch(remote: string): Promise<void> {
-		await this.git.fetch(remote);
+		assertNotOptionLike(remote, 'remote name');
+		await this.git.raw(['fetch', remote]);
 	}
 
 	async pull(remote: string): Promise<void> {

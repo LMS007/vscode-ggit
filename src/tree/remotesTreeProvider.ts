@@ -44,7 +44,18 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 			// prefix-stripped one is what turns that leading segment into its own top-level folder,
 			// so a repo with multiple remotes gets one folder per remote instead of a single flat
 			// (and ambiguous, if two remotes shared a branch name) list.
-			return sortTree(buildBranchTree(filtered, b => b.name));
+			const tree = buildBranchTree(filtered, b => b.name);
+			// A remote with no remote-tracking branches (never fetched, or its fetch failed) has nothing
+			// to build a folder from, so it'd vanish from the view -- still list it, as an empty folder.
+			// Not while filtering, where only folders containing a match belong.
+			if (!term) {
+				for (const name of remoteNames) {
+					if (!tree.some(node => node.kind === 'folder' && node.name === name)) {
+						tree.push({ kind: 'folder', name, id: name, children: [] });
+					}
+				}
+			}
+			return sortTree(tree);
 		}), []);
 	}
 
@@ -56,11 +67,19 @@ export class RemotesTreeProvider implements vscode.TreeDataProvider<BranchTreeNo
 			// expand/collapse state the same folder remembered from the unfiltered view (ids are what
 			// let VS Code remember a manual toggle across refreshes; reusing the plain id here could
 			// mean a folder the user previously collapsed stays collapsed despite now containing a match).
+			const isEmpty = node.children.length === 0;
 			const item = new vscode.TreeItem(
 				node.name,
-				this.isFiltered ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed
+				isEmpty
+					? vscode.TreeItemCollapsibleState.None
+					: this.isFiltered
+						? vscode.TreeItemCollapsibleState.Expanded
+						: vscode.TreeItemCollapsibleState.Collapsed
 			);
 			item.id = this.isFiltered ? `${node.id}#filtered` : node.id;
+			if (isEmpty) {
+				item.description = 'no branches fetched';
+			}
 			// A top-level folder (no "/" in its id) is a remote itself, e.g. "origin" -- everything
 			// nested under it is that remote's own branch-path grouping, same as before. Distinct icon
 			// and contextValue so a remote reads as a different kind of thing than a plain path folder.
