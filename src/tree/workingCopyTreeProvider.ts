@@ -29,7 +29,7 @@ export type WorkingCopyNode = WorkingChangeFile | CreateCommitNode | WorkingCopy
 export type WorkingCopyViewMode = 'list' | 'tree';
 
 export function getWorkingCopyViewMode(): WorkingCopyViewMode {
-	return vscode.workspace.getConfiguration('ggit').get<WorkingCopyViewMode>('workingCopy.viewMode', 'list');
+	return vscode.workspace.getConfiguration('ggit').get<WorkingCopyViewMode>('workingCopy.viewMode', 'tree');
 }
 
 export function isCreateCommitNode(node: WorkingCopyNode): node is CreateCommitNode {
@@ -71,7 +71,7 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 	private splitPaths = new Set<string>();
 	// Snapshot of the mode the current rows were built in, so getTreeItem stays consistent with
 	// getChildren even if the setting flips mid-render.
-	private viewMode: WorkingCopyViewMode = 'list';
+	private viewMode: WorkingCopyViewMode = 'tree';
 
 	constructor(private readonly gitService: GitService) {}
 

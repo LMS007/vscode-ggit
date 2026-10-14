@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "publisher": "kylekeating",
   "repository": {
     "type": "git",
@@ -645,7 +645,7 @@
             "Show changed files as a flat list, with each file's folder as its description.",
             "Show changed files nested under their folders."
           ],
-          "default": "list",
+          "default": "tree",
           "description": "How the Working Copy view lays out changed files."
         }
       }
