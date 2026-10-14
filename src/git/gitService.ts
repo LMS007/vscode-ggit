@@ -460,9 +460,7 @@ export class GitService {
 	 * getLog (and the fetch/pull/push/sync pickers, all of which call this) would otherwise pass a
 	 * nonexistent ref straight to git and blow up with "fatal: bad revision". */
 	async getUpstreamBranch(branchName: string): Promise<string | undefined> {
-		const out = (
-			await this.git.raw(['for-each-ref', '--format=%(upstream:short)', `refs/heads/${branchName}`])
-		).trim();
+		const out = await this.getConfiguredUpstream(branchName);
 		if (!out) {
 			this.logger?.(`getUpstreamBranch(${branchName}): no upstream configured`);
 			return undefined;
@@ -483,6 +481,32 @@ export class GitService {
 			);
 			return undefined;
 		}
+	}
+
+	/** The upstream exactly as configured, e.g. "origin/main" -- unlike getUpstreamBranch, still
+	 * returned when that remote branch is gone, so Set Upstream can show it and offer to clear it. */
+	async getConfiguredUpstream(branchName: string): Promise<string | undefined> {
+		const out = await this.git.raw(['for-each-ref', '--format=%(upstream:short)', `refs/heads/${branchName}`]);
+		return out.trim() || undefined;
+	}
+
+	/** Whether a remote branch such as "origin/alice/feature-x" exists as of the last fetch -- a local
+	 * lookup, no network. --quiet makes a missing one print nothing, which raw() resolves as "". */
+	async remoteBranchExists(remoteBranchName: string): Promise<boolean> {
+		const out = await this.git.raw(['rev-parse', '--verify', '--quiet', `refs/remotes/${remoteBranchName}^{commit}`]);
+		return out.trim() !== '';
+	}
+
+	/** Points `branchName` at an existing remote branch, for pull, push, and ahead/behind. Passed as a
+	 * full refs/remotes/ name so a local branch that happens to be called "origin/x" can't win instead. */
+	async setUpstream(branchName: string, remoteBranchName: string): Promise<void> {
+		assertNotOptionLike(branchName, 'branch name');
+		await this.git.raw(['branch', `--set-upstream-to=refs/remotes/${remoteBranchName}`, branchName]);
+	}
+
+	async unsetUpstream(branchName: string): Promise<void> {
+		assertNotOptionLike(branchName, 'branch name');
+		await this.git.raw(['branch', '--unset-upstream', branchName]);
 	}
 
 	/** This branch's GitHub "tree" URL, e.g. https://github.com/owner/repo/tree/branch-name --

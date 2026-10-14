@@ -21,6 +21,7 @@ import {
 	pushCurrentBranch,
 	rebaseCurrentBranchWithPicker,
 	renameLocalBranch,
+	setBranchUpstream,
 	stageHunkAtCursor,
 	stashAllWithMessage,
 	stashPathsWithMessage,
@@ -932,6 +933,14 @@ export function activate(context: vscode.ExtensionContext): void {
 				() => renameLocalBranch(gitService, node.item.name),
 				refreshAll
 			);
+		}),
+
+		// No node from the Command Palette -- setBranchUpstream then uses the current branch.
+		vscode.commands.registerCommand('ggit.setUpstream', (node?: BranchTreeNode<BranchInfo>) => {
+			if (node && node.kind !== 'leaf') {
+				return;
+			}
+			return runGitOperation('Setting upstream…', () => setBranchUpstream(gitService, node?.item.name), refreshAll);
 		}),
 
 		vscode.commands.registerCommand('ggit.copyBranchName', async (node: BranchTreeNode<BranchInfo>) => {

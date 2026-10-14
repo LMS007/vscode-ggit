@@ -50,8 +50,11 @@ the panel and reloading the window.
 - Green = checked out here. Blue = checked out in another `git worktree`.
 - **Merge:** drag a branch onto the current one. Fast-forward, merge commit, `--no-ff`, squash, or
   `--no-commit`.
-- Right-click: Create Branch / Create Tag from Here, Rename, Copy Name, Delete.
+- Right-click: Create Branch / Create Tag from Here, Rename, Copy Name, Set Upstream Branch, Delete.
 - Toolbar: Create Branch, Fetch, Pull, Push, Sync, Rebase (`--autostash`).
+- Pull and Sync check the upstream first. A feature branch tracking `origin/main` (what
+  `git checkout -b alice/feature-x origin/main` sets up) gets asked before pulling it, and offered
+  its own remote branch instead.
 
 **Remotes**: browse and check out remote branches, live search, Add Remote, Remove Remote
 (right-click a remote), Delete Remote Branch.

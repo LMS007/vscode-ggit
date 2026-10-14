@@ -300,6 +300,11 @@
         "title": "Copy Branch Name"
       },
       {
+        "command": "ggit.setUpstream",
+        "title": "Set Upstream Branch…",
+        "category": "GGit"
+      },
+      {
         "command": "ggit.applyStashItem",
         "title": "Apply Stash"
       },
@@ -536,6 +541,11 @@
           "command": "ggit.copyBranchName",
           "when": "view == ggitBranches && viewItem =~ /^branch-/",
           "group": "2_modify@2"
+        },
+        {
+          "command": "ggit.setUpstream",
+          "when": "view == ggitBranches && viewItem =~ /^branch-/",
+          "group": "2_modify@3"
         },
         {
           "command": "ggit.deleteLocalBranch",

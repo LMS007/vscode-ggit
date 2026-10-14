@@ -34,6 +34,77 @@ async function resolveTargetRemoteBranch(gitService: GitService, current: string
 	return `${remote}/${current}`;
 }
 
+/** Names a remote's mainline usually has -- the fallback for a remote whose default branch git never
+ * recorded (see GitService.getRemoteDefaultBranch), e.g. one added by hand rather than cloned. */
+const MAINLINE_BRANCH_NAMES = ['main', 'master'];
+
+/** Whether `current` tracking `upstream` looks like an accident rather than a choice: a feature branch
+ * tracking its remote's mainline -- `git checkout -b alice/feature-x origin/main` sets that up on its
+ * own -- or tracking anything else while a same-named branch already exists on that remote. Pull then
+ * brings the mainline's commits in, and once both sides have new ones git stops with "Need to specify
+ * how to reconcile divergent branches". A branch tracking a differently named one on purpose (local
+ * "dev" tracking origin/develop) matches neither, so it's left alone. Returns the branch's own remote
+ * branch name, and whether it exists yet, when the upstream looks wrong. */
+async function findMistakenUpstream(
+	gitService: GitService,
+	current: string,
+	upstream: string
+): Promise<{ ownBranch: string; ownExists: boolean } | undefined> {
+	const { remote, branch } = splitRemoteBranch(upstream);
+	if (!remote || branch === current || MAINLINE_BRANCH_NAMES.includes(current)) {
+		return undefined;
+	}
+	const ownBranch = `${remote}/${current}`;
+	const [ownExists, defaultBranch] = await Promise.all([
+		gitService.remoteBranchExists(ownBranch),
+		gitService.getRemoteDefaultBranch(remote),
+	]);
+	const tracksMainline = upstream === defaultBranch || MAINLINE_BRANCH_NAMES.includes(branch);
+	return ownExists || tracksMainline ? { ownBranch, ownExists } : undefined;
+}
+
+/** Runs before Pull and Sync: when the branch's upstream looks like an accident (see
+ * findMistakenUpstream), asks before pulling from it, offering to track the branch's own remote
+ * branch instead -- or, when it isn't on the remote yet, to stop tracking so Push can publish it.
+ * Returns the remote branch to go ahead with, or undefined to stop. */
+async function confirmPullTarget(
+	gitService: GitService,
+	current: string,
+	target: string,
+	verb: 'Pull' | 'Sync'
+): Promise<string | undefined> {
+	const mistake = await findMistakenUpstream(gitService, current, target);
+	if (!mistake) {
+		return target;
+	}
+	const { ownBranch, ownExists } = mistake;
+	const fix = ownExists ? `Track ${ownBranch}` : 'Stop Tracking';
+	const proceed = `${verb} Anyway`;
+	const choice = await vscode.window.showWarningMessage(
+		`"${current}" tracks ${target}, not a branch of its own.`,
+		{
+			modal: true,
+			detail: ownExists
+				? `This would bring ${target}'s commits into it. ${ownBranch} is this branch on the remote -- track that instead?`
+				: `This would bring ${target}'s commits into it. This branch isn't on ${splitRemoteBranch(target).remote} yet: stop tracking ${target}, then Push publishes it as its own branch.`,
+		},
+		fix,
+		proceed
+	);
+	if (choice === proceed) {
+		return target;
+	}
+	if (choice !== fix) {
+		return undefined;
+	}
+	if (ownExists) {
+		await gitService.setUpstream(current, ownBranch);
+		return ownBranch;
+	}
+	await gitService.unsetUpstream(current);
+	return undefined;
+}
+
 function requireCurrentBranch(current: string | undefined): asserts current is string {
 	if (!current) {
 		throw new Error('Cannot do this while HEAD is detached (no current branch).');
@@ -65,7 +136,15 @@ async function fetchTagsFromAllRemotes(gitService: GitService): Promise<void> {
 export async function pullCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
 	const current = await gitService.getCurrentBranch();
 	requireCurrentBranch(current);
-	const target = await resolveTargetRemoteBranch(gitService, current, preferredRemote);
+	const target = await confirmPullTarget(
+		gitService,
+		current,
+		await resolveTargetRemoteBranch(gitService, current, preferredRemote),
+		'Pull'
+	);
+	if (!target) {
+		return;
+	}
 	await gitService.pullBranch(target);
 	await fetchTagsFromAllRemotes(gitService);
 }
@@ -154,7 +233,15 @@ export async function syncCurrentBranch(gitService: GitService, preferredRemote?
 	const current = await gitService.getCurrentBranch();
 	requireCurrentBranch(current);
 
-	const target = await resolveTargetRemoteBranch(gitService, current, preferredRemote);
+	const target = await confirmPullTarget(
+		gitService,
+		current,
+		await resolveTargetRemoteBranch(gitService, current, preferredRemote),
+		'Sync'
+	);
+	if (!target) {
+		return;
+	}
 	await gitService.pullBranch(target);
 	await fetchTagsFromAllRemotes(gitService);
 
@@ -221,6 +308,62 @@ export async function renameLocalBranch(gitService: GitService, branchName: stri
 		return;
 	}
 	await gitService.renameBranch(branchName, newName.trim());
+}
+
+type UpstreamPick = vscode.QuickPickItem & { upstream?: string };
+
+/** Points a local branch (the current one when none is given) at a different remote branch, or at
+ * none -- the fix for a branch tracking the wrong one, e.g. after `git checkout -b alice/feature-x
+ * origin/main`, which tracks origin/main on its own. Same-named remote branches are listed first,
+ * since that's nearly always the right pick. A branch on no remote yet has nothing to pick here:
+ * Push publishes it and sets up tracking in one go. */
+export async function setBranchUpstream(gitService: GitService, branchName?: string): Promise<void> {
+	const name = branchName ?? (await gitService.getCurrentBranch());
+	requireCurrentBranch(name);
+	const [configured, remotes] = await Promise.all([gitService.getConfiguredUpstream(name), gitService.listRemotes()]);
+	if (remotes.length === 0) {
+		throw new Error('No remote configured -- add one from the Remotes view first.');
+	}
+	const remoteBranches = (await Promise.all(remotes.map(remote => gitService.listRemoteBranches(remote))))
+		.flat()
+		.map(b => b.name);
+	const sameName = remoteBranches.filter(b => splitRemoteBranch(b).branch === name);
+	const others = remoteBranches.filter(b => !sameName.includes(b));
+
+	const toItem = (b: string): UpstreamPick => ({
+		label: b,
+		description: b === configured ? 'current' : undefined,
+		upstream: b,
+	});
+	const separator = (label: string): UpstreamPick => ({ label, kind: vscode.QuickPickItemKind.Separator });
+	const items: UpstreamPick[] = [
+		...(sameName.length > 0 ? [separator('Same name'), ...sameName.map(toItem), separator('Other branches')] : []),
+		...others.map(toItem),
+	];
+	if (configured) {
+		items.push(separator(''), {
+			label: '$(circle-slash) Stop Tracking',
+			description: remoteBranches.includes(configured) ? configured : `${configured} (gone)`,
+		});
+	}
+
+	const tracking = configured ? `Tracks ${configured}.` : "Doesn't track anything.";
+	const pick = await vscode.window.showQuickPick(items, {
+		title: `Set Upstream for "${name}"`,
+		placeHolder:
+			sameName.length > 0
+				? `${tracking} Pick the remote branch to track.`
+				: `${tracking} Not on any remote yet -- Push publishes it and tracks it.`,
+		ignoreFocusOut: true,
+	});
+	if (!pick || pick.upstream === configured) {
+		return;
+	}
+	if (pick.upstream) {
+		await gitService.setUpstream(name, pick.upstream);
+	} else {
+		await gitService.unsetUpstream(name);
+	}
 }
 
 /** "Mixed" (git's default) is offered as the non-scary option since it keeps working-tree files
