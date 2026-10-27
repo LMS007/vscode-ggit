@@ -1,5 +1,7 @@
 import type { ChangedFile, CommitInfo } from '../git/types';
 
+export type ViewedRef = 'checkedOut' | 'otherBranch' | 'notBranch';
+
 export type HostMessage =
 	| {
 			type: 'commits';
@@ -40,6 +42,17 @@ export type HostMessage =
 			/** Set when this is one file's history (see BranchHistoryPanel's filePath) -- shown as a
 			 * removable filter chip above the list. */
 			filePath: string | undefined;
+			/** How what's shown relates to the working copy -- which toolbar buttons can act on it (see
+			 * updateBranchActions in webview/main.ts):
+			 *  - 'checkedOut': the checked-out branch (or a detached HEAD) -- every button works on it.
+			 *  - 'otherBranch': a local branch that isn't checked out -- Fetch/Pull/Push/Sync and Create
+			 *    Branch act on it, but Rebase/stash/Commit only ever work on the checked-out branch's files.
+			 *  - 'notBranch': a tag, or anything else that isn't a local branch -- nothing to fetch, pull
+			 *    or push either. */
+			viewedRef: ViewedRef;
+			/** Named in the tooltips of the buttons that can't act on what's shown -- undefined on a
+			 * detached HEAD. */
+			checkedOutBranch: string | undefined;
 	  }
 	/** A subsequent page, requested via 'loadMoreCommits' -- appended to, not replacing, what's
 	 * already rendered. */

@@ -492,6 +492,12 @@ export class GitService {
 
 	/** Whether a remote branch such as "origin/alice/feature-x" exists as of the last fetch -- a local
 	 * lookup, no network. --quiet makes a missing one print nothing, which raw() resolves as "". */
+	/** Whether `name` is a local branch -- the History tab can also be showing a tag, or a detached HEAD. */
+	async localBranchExists(name: string): Promise<boolean> {
+		const out = await this.git.raw(['rev-parse', '--verify', '--quiet', `refs/heads/${name}^{commit}`]);
+		return out.trim() !== '';
+	}
+
 	async remoteBranchExists(remoteBranchName: string): Promise<boolean> {
 		const out = await this.git.raw(['rev-parse', '--verify', '--quiet', `refs/remotes/${remoteBranchName}^{commit}`]);
 		return out.trim() !== '';
@@ -581,6 +587,17 @@ export class GitService {
 	async pullBranch(remoteBranchName: string): Promise<void> {
 		const { remote, branch } = splitRemoteBranch(remoteBranchName);
 		await this.git.pull(remote, branch);
+	}
+
+	/** The pull a branch that isn't checked out can have: `git fetch <remote> <branch>:<local>` moves
+	 * it up to the remote branch without touching the working tree. Git only allows that as a
+	 * fast-forward -- anything else is rejected as non-fast-forward, since merging needs a checkout --
+	 * and refuses outright for a branch checked out in any worktree. Verified: it also updates the
+	 * remote-tracking branch, same as a plain fetch. */
+	async fastForwardBranch(localBranch: string, remoteBranchName: string): Promise<void> {
+		assertNotOptionLike(localBranch, 'branch name');
+		const { remote, branch } = splitRemoteBranch(remoteBranchName);
+		await this.git.raw(['fetch', remote, `refs/heads/${branch}:refs/heads/${localBranch}`]);
 	}
 
 	/** Pushes an already-tracked branch to its upstream. `--force-with-lease` (not a blunt `--force`)

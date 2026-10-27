@@ -1,5 +1,5 @@
 import type { ChangedFile, CommitInfo } from '../../git/types';
-import type { HostMessage, WebviewMessage } from '../protocol';
+import type { HostMessage, ViewedRef, WebviewMessage } from '../protocol';
 
 declare function acquireVsCodeApi(): {
 	postMessage(message: WebviewMessage): void;
@@ -26,7 +26,7 @@ const githubButtonEl = document.getElementById('githubButton');
  *  - a remote exists, upstream exists, commits ahead -> green "Push"
  *  - a remote exists, upstream exists, nothing ahead -> grey "Push"
  * Label text (not just color) changes because "Push" and "Publish" really are different actions --
- * publishing also sets up the new branch's tracking (see gitActions.pushCurrentBranch) -- even though
+ * publishing also sets up the new branch's tracking (see gitActions.pushLocalBranch) -- even though
  * both are wired to the same 'runAction'/ggit.push command underneath. `remotes` (not a plain
  * boolean) because the dropdown is what "is there anywhere to publish to" now means -- there's
  * always at least one entry to check once any remote exists, since the dropdown is built from that
@@ -44,6 +44,52 @@ function updatePushButton(remotes: string[], hasUpstream: boolean, aheadCount: n
 	}
 	pushButtonEl.title = label;
 	pushButtonEl.setAttribute('aria-label', label);
+}
+
+/** The buttons that only ever work on the checked-out branch's files (see TOOLBAR_BUTTONS in
+ * branchHistoryPanel.ts), and the first half of why, for their tooltip. */
+const CHECKED_OUT_ONLY: Record<string, string> = {
+	'ggit.rebase': 'Rebase works on the checked-out branch',
+	'ggit.applyStash': "Stashes apply to the checked-out branch's files",
+	'ggit.stashAll': "Stashes save the checked-out branch's changes",
+	'ggit.commit': 'Commits go to the checked-out branch',
+};
+
+/** Fetch/Pull/Push/Sync and Create Branch act on the branch shown even when it isn't checked out (see
+ * actionArgs in branchHistoryPanel.ts), and their tooltips name it. The CHECKED_OUT_ONLY buttons are
+ * disabled whenever anything else is shown -- with a tooltip saying why -- rather than quietly acting
+ * on a branch that isn't the one on screen; so are Fetch/Pull/Push/Sync for a tag. Runs after
+ * updatePushButton, since it overrides that button's tooltip. */
+function updateBranchActions(viewedRef: ViewedRef, branchName: string, checkedOutBranch: string | undefined): void {
+	const shown = `"${branchName}"`;
+	const checkedOut = checkedOutBranch ? `"${checkedOutBranch}"` : 'a detached HEAD';
+	for (const btn of toolbarEl.querySelectorAll<HTMLElement>('.toolbar-btn[data-command]')) {
+		const command = btn.dataset.command!;
+		const label = btn.querySelector('.toolbar-btn-label')?.textContent ?? '';
+		let disabledReason: string | undefined;
+		let title = label;
+		if (viewedRef !== 'checkedOut' && command in CHECKED_OUT_ONLY) {
+			disabledReason =
+				`${CHECKED_OUT_ONLY[command]} (${checkedOut}), not the one shown here.` +
+				(viewedRef === 'otherBranch' ? ` Check out ${shown} to use it on that branch.` : '');
+		} else if (viewedRef === 'notBranch' && REMOTE_AWARE_COMMANDS.has(command)) {
+			disabledReason = `${shown} isn't a local branch, so there's nothing to ${label.toLowerCase()}.`;
+		} else if (viewedRef === 'otherBranch') {
+			title = {
+				'ggit.createBranch': `Create a branch starting from ${shown}`,
+				'ggit.fetch': `Fetch ${shown}`,
+				'ggit.pull': `Pull ${shown} -- only a fast-forward, since it isn't checked out`,
+				'ggit.push': `${label} ${shown}`,
+				'ggit.sync': `Sync ${shown} -- pull (only a fast-forward, since it isn't checked out), then push`,
+			}[command] ?? label;
+		}
+		if (disabledReason) {
+			btn.setAttribute('aria-disabled', 'true');
+		} else {
+			btn.removeAttribute('aria-disabled');
+		}
+		btn.title = disabledReason ?? title;
+	}
 }
 
 /** Toggles the toolbar's remote dropdown against the purple "Add Remote" button next to it -- with
@@ -135,7 +181,7 @@ const REMOTE_AWARE_COMMANDS = new Set(['ggit.push', 'ggit.fetch', 'ggit.pull', '
 
 toolbarEl.addEventListener('click', event => {
 	const btn = (event.target as HTMLElement).closest<HTMLElement>('.toolbar-btn[data-command]');
-	if (!btn) {
+	if (!btn || btn.getAttribute('aria-disabled') === 'true') {
 		return;
 	}
 	const command = btn.dataset.command!;
@@ -769,6 +815,7 @@ window.addEventListener('message', event => {
 			renderFileFilter();
 			renderRemoteSelect(message.remotes, message.selectedRemote);
 			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount);
+			updateBranchActions(message.viewedRef, message.branchName, message.checkedOutBranch);
 			updateGitHubButton(message.githubUrl);
 			commitsEl.scrollTop = 0;
 			// A background reload keeps an open commit open if it's still in the list; a branch

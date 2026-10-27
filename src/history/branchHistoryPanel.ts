@@ -4,7 +4,7 @@ import { openDiffForFile } from '../diff/openDiff';
 import { applyCommitToCurrentBranch, resetHeadToCommit } from '../git/gitActions';
 import { GitService } from '../git/gitService';
 import { CommitInfo } from '../git/types';
-import { HostMessage, WebviewMessage } from './protocol';
+import { HostMessage, ViewedRef, WebviewMessage } from './protocol';
 
 /** Shared across every History panel instance/reload — not scoped to a single webview session. */
 const SPLIT_STATE_KEY = 'ggit.historyPanel.commitsSplitPercent';
@@ -24,10 +24,12 @@ const COMMITS_PAGE_SIZE = 100;
  * commit in the history counts as unpushed. */
 const UNPUSHED_COMMITS_LIMIT = 5000;
 
-/** Mirrors the Branches toolbar/sidebar Actions view — these always act on the currently checked-out
- * branch, not necessarily the one this panel happens to be showing history for. The trailing three
- * (stash apply/save, commit) mirror Working Copy's own toolbar buttons instead — same commands, same
- * behavior, just also reachable from here. */
+/** Mirrors the Branches toolbar/sidebar Actions view, except that here they act on the branch this
+ * panel is showing, checked out or not, wherever git allows that (see actionArgs): Fetch, Pull (only
+ * a fast-forward, for a branch that isn't checked out), Push, Sync, and Create Branch's starting
+ * point. Rebase, and the trailing three (stash apply/save, commit -- Working Copy's own toolbar
+ * buttons, also reachable from here), only ever work on the checked-out branch's files, so the
+ * webview disables them while any other branch is shown (see updateBranchActions). */
 const TOOLBAR_BUTTONS: {
 	command: string;
 	icon: string;
@@ -56,8 +58,15 @@ const TOOLBAR_BUTTONS: {
 ];
 
 /** The only commands the webview's 'runAction' message may trigger -- anything else is dropped
- * host-side, so the webview can never act as a generic "run any VS Code command" bridge. */
-const TOOLBAR_COMMANDS = new Set(TOOLBAR_BUTTONS.map(b => b.command));
+ * host-side, so the webview can never act as a generic "run any VS Code command" bridge. Add Remote
+ * is the toolbar's one button not in TOOLBAR_BUTTONS (see remoteToolbarHtml in getHtml). */
+const TOOLBAR_COMMANDS = new Set([...TOOLBAR_BUTTONS.map(b => b.command), 'ggit.addRemote']);
+
+/** The ones that act on whichever local branch is shown, checked out or not (see actionArgs). */
+const REMOTE_COMMANDS = new Set(['ggit.fetch', 'ggit.pull', 'ggit.push', 'ggit.sync']);
+
+/** The ones that don't involve any branch at all, so they work whatever's shown. */
+const CHECKOUT_FREE_COMMANDS = new Set(['ggit.refresh', 'ggit.addRemote']);
 
 export class BranchHistoryPanel {
 	private static current: BranchHistoryPanel | undefined;
@@ -82,6 +91,9 @@ export class BranchHistoryPanel {
 	 * 'openExternalUrl' message is allowed to open, so nothing the webview renders can turn it into
 	 * an open-any-URL bridge. */
 	private githubUrl: string | undefined;
+	/** As last handed to the webview (see 'commits'.viewedRef) -- what 'runAction' passes to the
+	 * branch-aware commands, see actionArgs. */
+	private viewedRef: ViewedRef = 'checkedOut';
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -172,18 +184,29 @@ export class BranchHistoryPanel {
 			return;
 		}
 		try {
-			const [{ commits, hasMore }, aheadCount, upstream, remotes, githubUrl, unpushed] = await Promise.all([
-				this.fetchLogPage(0),
-				this.gitService.getAheadCount(this.branchName),
-				this.gitService.getUpstreamBranch(this.branchName),
-				this.gitService.listRemotes(),
-				this.gitService.getGitHubBranchUrl(this.branchName),
-				this.gitService.getUnpushedCommits(this.branchName, UNPUSHED_COMMITS_LIMIT),
-			]);
+			const [{ commits, hasMore }, aheadCount, upstream, remotes, githubUrl, unpushed, checkedOutBranch, isLocalBranch] =
+				await Promise.all([
+					this.fetchLogPage(0),
+					this.gitService.getAheadCount(this.branchName),
+					this.gitService.getUpstreamBranch(this.branchName),
+					this.gitService.listRemotes(),
+					this.gitService.getGitHubBranchUrl(this.branchName),
+					this.gitService.getUnpushedCommits(this.branchName, UNPUSHED_COMMITS_LIMIT),
+					this.gitService.getCurrentBranch(),
+					this.gitService.localBranchExists(this.branchName),
+				]);
 			this.commitsLoaded = commits.length;
 			this.hasMoreCommits = hasMore;
+			// "HEAD" is what a file's history opens on from a detached HEAD (see ggit.showFileHistory) --
+			// the working copy's own commit, so it counts as checked out.
+			this.viewedRef =
+				this.branchName === 'HEAD' || this.branchName === checkedOutBranch
+					? 'checkedOut'
+					: isLocalBranch
+						? 'otherBranch'
+						: 'notBranch';
 			// The previously-selected remote if it's still configured; otherwise "origin" if present
-			// (the common case, and what pickRemote/pushCurrentBranch would land on anyway with only
+			// (the common case, and what pickRemote/pushLocalBranch would land on anyway with only
 			// one remote); otherwise whatever's first. Persisted only when it actually changes, so a
 			// repo with zero or one remote doesn't write to globalState on every single load.
 			const effectiveRemote =
@@ -208,6 +231,8 @@ export class BranchHistoryPanel {
 				githubUrl,
 				unpushed,
 				filePath: this.filePath,
+				viewedRef: this.viewedRef,
+				checkedOutBranch,
 			});
 		} catch (err) {
 			this.post({ type: 'error', message: (err as Error).message });
@@ -343,7 +368,10 @@ export class BranchHistoryPanel {
 			case 'runAction':
 				// Only the toolbar's own commands -- see TOOLBAR_COMMANDS.
 				if (TOOLBAR_COMMANDS.has(msg.command)) {
-					void vscode.commands.executeCommand(msg.command, msg.remote);
+					const args = this.actionArgs(msg.command, msg.remote);
+					if (args) {
+						void vscode.commands.executeCommand(msg.command, ...args);
+					}
 				}
 				break;
 			case 'resetHead':
@@ -406,6 +434,22 @@ export class BranchHistoryPanel {
 	 * "open for editing" only ever makes sense against what's actually on disk now. Checks existence
 	 * first (rather than letting vscode.open fail raw) since the file may have since been renamed or
 	 * deleted -- that's the "(if it can be)" case. */
+	/** What a toolbar command runs with, given what's shown (see viewedRef): Fetch/Pull/Push/Sync act
+	 * on a shown branch that isn't checked out by name (the checked-out one needs no name -- and on a
+	 * detached HEAD has none), and Create Branch starts from it. Undefined for a command that can't act
+	 * on what's shown at all -- the webview already disables those (see updateBranchActions), so this is
+	 * just the backstop. */
+	private actionArgs(command: string, remote: string | undefined): unknown[] | undefined {
+		const branch = this.viewedRef === 'otherBranch' ? this.branchName : undefined;
+		if (REMOTE_COMMANDS.has(command)) {
+			return this.viewedRef === 'notBranch' ? undefined : [remote, branch];
+		}
+		if (command === 'ggit.createBranch') {
+			return [branch];
+		}
+		return this.viewedRef === 'checkedOut' || CHECKOUT_FREE_COMMANDS.has(command) ? [] : undefined;
+	}
+
 	private async openFileForEditing(relPath: string): Promise<void> {
 		const uri = vscode.Uri.file(this.gitService.resolveRepoPath(relPath));
 		try {
@@ -627,6 +671,17 @@ export class BranchHistoryPanel {
 			 * generic grey background-color would win on hover and the purple would flash grey. */
 			background-color: #8250df;
 			border-color: rgba(255, 255, 255, 0.6);
+		}
+		/* A button that can't act on the branch shown (see updateBranchActions in webview/main.ts).
+		 * aria-disabled rather than the disabled attribute, which would also suppress the hover tooltip
+		 * that says why. Last, and hover included, so it wins over every accent above. */
+		.toolbar-btn[aria-disabled='true'],
+		.toolbar-btn[aria-disabled='true']:hover {
+			opacity: 0.45;
+			cursor: default;
+			border-color: rgba(200, 200, 200, 0.4);
+			background-color: transparent;
+			color: var(--vscode-icon-foreground, var(--vscode-foreground));
 		}
 		#searchBar {
 			flex: 0 0 auto;

@@ -17,14 +17,14 @@ async function pickDefaultRemote(gitService: GitService, preferredRemote?: strin
 	return remotes.includes('origin') ? 'origin' : remotes[0];
 }
 
-/** Resolves which remote branch an action should target: the current branch's tracked upstream if
+/** Resolves which remote branch an action should target: the branch's tracked upstream if
  * it has one; otherwise a default remote (see pickDefaultRemote) paired with the same-named branch --
  * no prompt. This used to show a QuickPick of every branch on every remote when there was no
  * upstream; that's gone in favor of always just picking something sensible. If the guessed branch
  * doesn't actually exist on the chosen remote, the fetch/pull itself fails with a clear git error
  * instead of this asking first. */
-async function resolveTargetRemoteBranch(gitService: GitService, current: string, preferredRemote?: string): Promise<string> {
-	const upstream = await gitService.getUpstreamBranch(current);
+async function resolveTargetRemoteBranch(gitService: GitService, branch: string, preferredRemote?: string): Promise<string> {
+	const upstream = await gitService.getUpstreamBranch(branch);
 	if (upstream) {
 		return upstream;
 	}
@@ -32,7 +32,7 @@ async function resolveTargetRemoteBranch(gitService: GitService, current: string
 	if (!remote) {
 		throw new Error('No remote configured -- add one from the Remotes view first.');
 	}
-	return `${remote}/${current}`;
+	return `${remote}/${branch}`;
 }
 
 /** Names a remote's mainline usually has -- the fallback for a remote whose default branch git never
@@ -112,11 +112,34 @@ function requireCurrentBranch(current: string | undefined): asserts current is s
 	}
 }
 
-export async function fetchCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
-	const current = await gitService.getCurrentBranch();
-	requireCurrentBranch(current);
-	const target = await resolveTargetRemoteBranch(gitService, current, preferredRemote);
+/** Fetch/Pull/Push/Sync below all act on `branchName` when given -- the History tab passes whichever
+ * branch it's showing, checked out or not -- and on the checked-out branch otherwise (the Branches
+ * view's toolbar, the Command Palette). */
+export async function fetchLocalBranch(gitService: GitService, branchName?: string, preferredRemote?: string): Promise<void> {
+	const branch = branchName ?? (await gitService.getCurrentBranch());
+	requireCurrentBranch(branch);
+	const target = await resolveTargetRemoteBranch(gitService, branch, preferredRemote);
 	await gitService.fetchBranch(target);
+}
+
+/** A real pull merges into the working tree, so only the checked-out branch can have one. Any other
+ * branch can only be fast-forwarded in place (see GitService.fastForwardBranch) -- when it has
+ * diverged from `target`, that's reported as needing a checkout rather than as git's bare rejection. */
+async function pullOrFastForward(gitService: GitService, branch: string, target: string): Promise<void> {
+	if (branch === (await gitService.getCurrentBranch())) {
+		await gitService.pullBranch(target);
+		return;
+	}
+	try {
+		await gitService.fastForwardBranch(branch, target);
+	} catch (err) {
+		if (isNonFastForwardRejection(err as Error)) {
+			throw new Error(
+				`"${branch}" and ${target} have diverged. A branch that isn't checked out can only be fast-forwarded -- check out "${branch}" to pull them together.`
+			);
+		}
+		throw err;
+	}
 }
 
 /** Every remote's new tags, after a pull -- `git pull <remote> <branch>` names the branch, which skips
@@ -134,19 +157,19 @@ async function fetchTagsFromAllRemotes(gitService: GitService): Promise<void> {
 	}
 }
 
-export async function pullCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
-	const current = await gitService.getCurrentBranch();
-	requireCurrentBranch(current);
+export async function pullLocalBranch(gitService: GitService, branchName?: string, preferredRemote?: string): Promise<void> {
+	const branch = branchName ?? (await gitService.getCurrentBranch());
+	requireCurrentBranch(branch);
 	const target = await confirmPullTarget(
 		gitService,
-		current,
-		await resolveTargetRemoteBranch(gitService, current, preferredRemote),
+		branch,
+		await resolveTargetRemoteBranch(gitService, branch, preferredRemote),
 		'Pull'
 	);
 	if (!target) {
 		return;
 	}
-	await gitService.pullBranch(target);
+	await pullOrFastForward(gitService, branch, target);
 	await fetchTagsFromAllRemotes(gitService);
 }
 
@@ -198,60 +221,61 @@ async function pushWithForceEscalation(gitService: GitService, branchName: strin
 	}
 }
 
-/** If the current branch is already published, pushes it to its actual tracked remote (not
- * necessarily "origin" -- see splitRemoteBranch); otherwise publishes + tracks it against
- * `preferredRemote` if given (the History tab's own remote dropdown already resolved that choice,
- * so there's no need to ask again), or falls back to `pickRemote`'s picker -- used when this is
- * invoked from somewhere with no such dropdown, e.g. the Branches view's Push button. */
-export async function pushCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
-	const current = await gitService.getCurrentBranch();
-	requireCurrentBranch(current);
+/** If the branch is already published, pushes it to its actual tracked remote (not necessarily
+ * "origin" -- see splitRemoteBranch); otherwise publishes + tracks it against `preferredRemote` if
+ * given (the History tab's own remote dropdown already resolved that choice, so there's no need to ask
+ * again), or falls back to `pickRemote`'s picker -- used when this is invoked from somewhere with no
+ * such dropdown, e.g. the Branches view's Push button. Neither needs the branch checked out. */
+export async function pushLocalBranch(gitService: GitService, branchName?: string, preferredRemote?: string): Promise<void> {
+	const branch = branchName ?? (await gitService.getCurrentBranch());
+	requireCurrentBranch(branch);
 
-	const upstream = await gitService.getUpstreamBranch(current);
+	const upstream = await gitService.getUpstreamBranch(branch);
 	if (upstream) {
-		await pushWithForceEscalation(gitService, current, splitRemoteBranch(upstream).remote);
+		await pushWithForceEscalation(gitService, branch, splitRemoteBranch(upstream).remote);
 		return;
 	}
 
-	const remote = preferredRemote ?? (await pickRemote(gitService, current));
+	const remote = preferredRemote ?? (await pickRemote(gitService, branch));
 	if (!remote) {
 		return;
 	}
 
 	const remoteName = await vscode.window.showInputBox({
-		prompt: `Publish "${current}" to ${remote} as:`,
-		value: current,
+		prompt: `Publish "${branch}" to ${remote} as:`,
+		value: branch,
 		validateInput: value => (value.trim() ? undefined : 'Enter a branch name.'),
 		ignoreFocusOut: true,
 	});
 	if (remoteName) {
-		await gitService.publishBranch(current, remoteName.trim(), remote);
+		await gitService.publishBranch(branch, remoteName.trim(), remote);
 	}
 }
 
-/** Pulls from the target remote branch, then pushes back — publishing first if the branch isn't tracked yet. */
-export async function syncCurrentBranch(gitService: GitService, preferredRemote?: string): Promise<void> {
-	const current = await gitService.getCurrentBranch();
-	requireCurrentBranch(current);
+/** Pulls from the target remote branch (only a fast-forward, for a branch that isn't checked out --
+ * see pullOrFastForward), then pushes back — publishing first if the branch isn't tracked yet. */
+export async function syncLocalBranch(gitService: GitService, branchName?: string, preferredRemote?: string): Promise<void> {
+	const branch = branchName ?? (await gitService.getCurrentBranch());
+	requireCurrentBranch(branch);
 
 	const target = await confirmPullTarget(
 		gitService,
-		current,
-		await resolveTargetRemoteBranch(gitService, current, preferredRemote),
+		branch,
+		await resolveTargetRemoteBranch(gitService, branch, preferredRemote),
 		'Sync'
 	);
 	if (!target) {
 		return;
 	}
-	await gitService.pullBranch(target);
+	await pullOrFastForward(gitService, branch, target);
 	await fetchTagsFromAllRemotes(gitService);
 
-	const upstream = await gitService.getUpstreamBranch(current);
+	const upstream = await gitService.getUpstreamBranch(branch);
 	if (upstream) {
-		await pushWithForceEscalation(gitService, current, splitRemoteBranch(upstream).remote);
+		await pushWithForceEscalation(gitService, branch, splitRemoteBranch(upstream).remote);
 	} else {
-		const { remote, branch } = splitRemoteBranch(target);
-		await gitService.publishBranch(current, branch, remote);
+		const { remote, branch: remoteBranch } = splitRemoteBranch(target);
+		await gitService.publishBranch(branch, remoteBranch, remote);
 	}
 }
 

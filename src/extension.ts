@@ -18,16 +18,16 @@ import {
 	confirmStagingConflicts,
 	deleteLocalBranch,
 	discardWorkingChanges,
-	fetchCurrentBranch,
-	pullCurrentBranch,
-	pushCurrentBranch,
+	fetchLocalBranch,
+	pullLocalBranch,
+	pushLocalBranch,
 	rebaseCurrentBranchWithPicker,
 	renameLocalBranch,
 	setBranchUpstream,
 	stageHunkAtCursor,
 	stashAllWithMessage,
 	stashPathsWithMessage,
-	syncCurrentBranch,
+	syncLocalBranch,
 	unstageHunkAtCursor,
 } from './git/gitActions';
 import { GitService, splitRemoteBranch, unlessNotARepo } from './git/gitService';
@@ -92,15 +92,6 @@ export function activate(context: vscode.ExtensionContext): void {
 		// onDidChangeCheckboxState below) -- VS Code's automatic parent/child propagation would
 		// instead fire a separate event item for every file beneath it.
 		manageCheckboxStateManually: true,
-	});
-	// VS Code only shows a context-menu item when its `when` clause holds for *every* row in the
-	// right-clicked selection, so gating Working Copy's items on `viewItem != 'createCommitAction'`
-	// alone would hide the whole menu the moment Create Commit is part of a select-all. This key lets
-	// package.json exempt that row only while it's selected alongside real files -- right-clicked on
-	// its own it still gets no menu, and the handlers drop it (see resolveWorkingChangeSelection).
-	workingCopyView.onDidChangeSelection(e => {
-		const mixed = e.selection.some(isCreateCommitNode) && e.selection.some(n => !isCreateCommitNode(n));
-		void vscode.commands.executeCommand('setContext', 'ggit.workingCopyMixedSelection', mixed);
 	});
 
 	const branchesView = vscode.window.createTreeView('ggitBranches', {
@@ -522,8 +513,10 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 
-		vscode.commands.registerCommand('ggit.createBranch', () => {
-			CreateBranchPanel.createOrShow(context, gitService, refreshAll);
+		// `startPoint` only comes from the History tab -- whichever branch it's showing (see
+		// branchHistoryPanel.ts's 'runAction' handling); otherwise the form starts from the checked-out one.
+		vscode.commands.registerCommand('ggit.createBranch', (startPoint?: string) => {
+			CreateBranchPanel.createOrShow(context, gitService, refreshAll, startPoint);
 		}),
 
 		vscode.commands.registerCommand('ggit.setPinnedBranchCount', async () => {
@@ -544,24 +537,37 @@ export function activate(context: vscode.ExtensionContext): void {
 			branchesProvider.refresh();
 		}),
 
-		// The optional `remote` arg on fetch/pull/push/sync is only ever supplied by the History tab's
-		// own remote dropdown (see branchHistoryPanel.ts's 'runAction' handling) -- every other
-		// trigger, like the Branches view's toolbar, calls these with no args and each falls back to
-		// its own sensible default (see pickDefaultRemote/pickRemote in gitActions.ts).
-		vscode.commands.registerCommand('ggit.fetch', (remote?: string) =>
-			runGitOperation('Fetching…', () => fetchCurrentBranch(gitService, remote), refreshAllAndRemoteTags)
+		// The optional `remote` and `branchName` args on fetch/pull/push/sync are only ever supplied by
+		// the History tab -- its remote dropdown, and whichever branch it's showing, checked out or not
+		// (see branchHistoryPanel.ts's 'runAction' handling). Every other trigger, like the Branches
+		// view's toolbar, calls these with no args: the checked-out branch, with each falling back to its
+		// own sensible remote default (see pickDefaultRemote/pickRemote in gitActions.ts).
+		vscode.commands.registerCommand('ggit.fetch', (remote?: string, branchName?: string) =>
+			runGitOperation(
+				branchName ? `Fetching ${branchName}…` : 'Fetching…',
+				() => fetchLocalBranch(gitService, branchName, remote),
+				refreshAllAndRemoteTags
+			)
 		),
 
-		vscode.commands.registerCommand('ggit.pull', (remote?: string) =>
-			runGitOperation('Pulling…', () => pullCurrentBranch(gitService, remote), refreshAllAndRemoteTags)
+		vscode.commands.registerCommand('ggit.pull', (remote?: string, branchName?: string) =>
+			runGitOperation(
+				branchName ? `Pulling ${branchName}…` : 'Pulling…',
+				() => pullLocalBranch(gitService, branchName, remote),
+				refreshAllAndRemoteTags
+			)
 		),
 
-		vscode.commands.registerCommand('ggit.push', (remote?: string) =>
-			runGitOperation('Pushing…', () => pushCurrentBranch(gitService, remote), refreshAll)
+		vscode.commands.registerCommand('ggit.push', (remote?: string, branchName?: string) =>
+			runGitOperation(branchName ? `Pushing ${branchName}…` : 'Pushing…', () => pushLocalBranch(gitService, branchName, remote), refreshAll)
 		),
 
-		vscode.commands.registerCommand('ggit.sync', (remote?: string) =>
-			runGitOperation('Syncing…', () => syncCurrentBranch(gitService, remote), refreshAllAndRemoteTags)
+		vscode.commands.registerCommand('ggit.sync', (remote?: string, branchName?: string) =>
+			runGitOperation(
+				branchName ? `Syncing ${branchName}…` : 'Syncing…',
+				() => syncLocalBranch(gitService, branchName, remote),
+				refreshAllAndRemoteTags
+			)
 		),
 
 		vscode.commands.registerCommand('ggit.rebase', () =>
@@ -731,6 +737,24 @@ export function activate(context: vscode.ExtensionContext): void {
 				);
 			}
 		),
+
+		// Cmd/Ctrl+A in Working Copy (see the keybinding in package.json), in place of VS Code's own
+		// list.selectAll. That one only selects the focused row's folder, widening one level per press,
+		// and once it reaches the top it takes the pinned Create Commit row too. The extension API can't
+		// set a multi-row selection directly, so this gets there through the same list commands instead:
+		// started from Create Commit, a select-all spans the whole view in one go; then that row alone is
+		// toggled back out and focus moved off it onto the first real row. (Folders stay selected, which
+		// is what covers the files inside any collapsed one.)
+		//
+		// Don't drive a context key off this view's selection again (it used to have one, to keep the
+		// right-click menu on a selection that included Create Commit): any change to a key the rows'
+		// menus mention makes VS Code re-render every row, and that re-render drops the selection
+		// highlight from all of them but Create Commit -- verified against the live DOM.
+		vscode.commands.registerCommand('ggit.workingCopySelectAll', async () => {
+			for (const command of ['list.clear', 'list.focusFirst', 'list.selectAll', 'list.toggleSelection', 'list.focusDown']) {
+				await vscode.commands.executeCommand(command);
+			}
+		}),
 
 		vscode.commands.registerCommand('ggit.workingCopyViewAsTree', () =>
 			vscode.workspace.getConfiguration('ggit').update('workingCopy.viewMode', 'tree', vscode.ConfigurationTarget.Global)
@@ -1173,18 +1197,17 @@ export function activate(context: vscode.ExtensionContext): void {
 
 /** Normalizes a Working Copy context-menu invocation into just the real files, dropping the pinned
  * Create Commit row if it's part of the selection and expanding tree-mode folder rows into every file
- * beneath them (deduplicated, since a folder and a file inside it can both be selected). package.json only offers the menu on that row
- * while it's selected alongside real files (see ggit.workingCopyMixedSelection in activate()) --
- * VS Code's `when`-clause matching applies to every item in the selection, so the menu can't be
- * hidden for that one row without hiding it for a select-all too -- which leaves dropping it here. */
+ * beneath them (deduplicated, since a folder and a file inside it can both be selected). package.json
+ * already keeps the menu off any selection that includes Create Commit (VS Code applies `when`
+ * clauses to every selected row), and Select All leaves it out (see ggit.workingCopySelectAll) --
+ * dropping it here is just a backstop. */
 function resolveWorkingChangeSelection(file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]): WorkingChangeFile[] {
 	const nodes = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
 	return [...new Set(nodes.flatMap(collectWorkingChangeFiles))];
 }
 
-/** For the single-target commands (Copy Path, Reveal): the right-clicked file itself, or -- when the
- * row right-clicked was Create Commit as part of a larger selection, e.g. a select-all -- the first
- * real file in that selection instead. */
+/** For the single-target commands (Copy Path, Reveal): the right-clicked file itself, or -- should the
+ * row right-clicked ever be Create Commit or a folder -- the first real file in the selection instead. */
 function resolveSingleWorkingChangeFile(
 	file: WorkingCopyNode,
 	selectedFiles?: WorkingCopyNode[]
