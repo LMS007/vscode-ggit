@@ -69,6 +69,11 @@ export class WorkingChangeDecorationProvider implements vscode.FileDecorationPro
 			return { color: new vscode.ThemeColor(STATUS_COLOR_TOKENS.U) };
 		}
 		const status = uri.query as FileStatus;
+		if (status === 'U') {
+			// "!" rather than git's own "U" -- the built-in Source Control view badges conflicts the same
+			// way, and uses "U" for untracked files, which is what a "U" here would read as.
+			return { badge: '!', color: new vscode.ThemeColor(STATUS_COLOR_TOKENS.U), tooltip: 'Conflicted' };
+		}
 		return {
 			badge: status,
 			color: new vscode.ThemeColor(STATUS_COLOR_TOKENS[status] ?? STATUS_COLOR_TOKENS.M),

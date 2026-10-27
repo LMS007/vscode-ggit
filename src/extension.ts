@@ -13,7 +13,9 @@ import { openDiffForWorkingChange } from './diff/openDiff';
 import { GGitShowContentProvider, GGIT_SHOW_SCHEME } from './diff/showContentProvider';
 import {
 	addPathsToGitignore,
+	applyStashReportingConflicts,
 	applyStashWithPicker,
+	confirmStagingConflicts,
 	deleteLocalBranch,
 	discardWorkingChanges,
 	fetchCurrentBranch,
@@ -289,6 +291,11 @@ export function activate(context: vscode.ExtensionContext): void {
 	const isLocalBranchDoubleClick = createDoubleClickGuard();
 	const isRemoteBranchDoubleClick = createDoubleClickGuard();
 
+	// Checking a conflicted file (or a folder/Create Commit with one beneath it) is what marks it
+	// resolved -- see confirmStagingConflicts. Declining leaves it unstaged, and the refreshAll below
+	// puts the checkbox back. Only checking needs this: a conflicted row is never staged, so neither
+	// is a folder or Create Commit holding one, and there's nothing to uncheck.
+	const conflictedPaths = (files: WorkingChangeFile[]) => files.filter(f => f.status === 'U').map(f => f.path);
 	workingCopyView.onDidChangeCheckboxState(async e => {
 		for (const [node, state] of e.items) {
 			const stateLabel = state === vscode.TreeItemCheckboxState.Checked ? 'Checked' : 'Unchecked';
@@ -298,7 +305,10 @@ export function activate(context: vscode.ExtensionContext): void {
 					// per-file toggle.
 					output.appendLine(`checkbox: Create Commit row -> ${stateLabel}`);
 					if (state === vscode.TreeItemCheckboxState.Checked) {
-						await gitService.stageAll();
+						const conflicted = (await gitService.getConflictedFiles()).map(f => f.path);
+						if (await confirmStagingConflicts(gitService, conflicted)) {
+							await gitService.stageAll();
+						}
 					} else {
 						await gitService.unstageAll();
 					}
@@ -306,14 +316,18 @@ export function activate(context: vscode.ExtensionContext): void {
 					// `git add`/`git reset` on a directory covers everything beneath it, deletions included.
 					output.appendLine(`checkbox: folder "${node.path}" -> ${stateLabel}`);
 					if (state === vscode.TreeItemCheckboxState.Checked) {
-						await gitService.stageFile(node.path);
+						if (await confirmStagingConflicts(gitService, conflictedPaths(collectWorkingChangeFiles(node)))) {
+							await gitService.stageFile(node.path);
+						}
 					} else {
 						await gitService.unstageFile(node.path);
 					}
 				} else if (isWorkingChangeFile(node)) {
 					output.appendLine(`checkbox: "${node.path}" (row was ${node.state}) -> ${stateLabel}`);
 					if (state === vscode.TreeItemCheckboxState.Checked) {
-						await gitService.stageFile(node.path);
+						if (await confirmStagingConflicts(gitService, conflictedPaths([node]))) {
+							await gitService.stageFile(node.path);
+						}
 					} else {
 						await gitService.unstageFile(node.path);
 					}
@@ -1013,7 +1027,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		// Deliberately ignores any multi-selection — Apply only ever makes sense for one stash at a
 		// time, so this always acts on just the row that was actually right-clicked.
 		vscode.commands.registerCommand('ggit.applyStashItem', (stash: StashInfo) =>
-			runGitOperation(`Applying ${stash.ref}…`, () => gitService.applyStash(stash.ref), refreshAll)
+			runGitOperation(`Applying ${stash.ref}…`, () => applyStashReportingConflicts(gitService, stash.ref), refreshAll)
 		),
 
 		vscode.commands.registerCommand('ggit.deleteStash', async (stash: StashInfo, selectedStashes?: StashInfo[]) => {

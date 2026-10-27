@@ -143,6 +143,20 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		// In tree mode the enclosing folder rows already say where the file lives.
 		const dirLabel = dir === '.' || this.viewMode === 'tree' ? undefined : dir;
 		const item = new vscode.TreeItem(path.basename(file.path), vscode.TreeItemCollapsibleState.None);
+		item.resourceUri = toWorkingChangeUri(file.path, file.status);
+		if (file.status === 'U') {
+			// Unchecked until resolved: checking it stages the file as-is, which is exactly what marks a
+			// conflict resolved in git (see confirmStagingConflicts for the conflict-marker check).
+			item.description = [dirLabel, '(conflicted)'].filter(Boolean).join('  ');
+			item.checkboxState = vscode.TreeItemCheckboxState.Unchecked;
+			item.contextValue = 'workingChangeConflicted';
+			item.tooltip = `${file.path} — conflicted. Resolve it in the editor, then check it to mark it resolved, or Discard Changes to go back to HEAD's version.`;
+			// The file itself, not a diff: there's no single index version of an unmerged file to diff
+			// against, and opening it plainly is what brings up the editor's own conflict-marker
+			// actions (Accept Current/Incoming, Resolve in Merge Editor).
+			item.command = { command: 'ggit.openWorkingChangeFile', title: 'Open File', arguments: [file] };
+			return item;
+		}
 		const isSplit = this.splitPaths.has(file.path);
 		// Placeholder until real hunk-level staging UI exists: a file with both staged and unstaged
 		// changes at once (see GitService.getWorkingChanges) renders as two rows sharing a name, so
@@ -150,7 +164,6 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		item.description = isSplit
 			? [dirLabel, file.state === 'staged' ? '(staged)' : '(unstaged)'].filter(Boolean).join('  ')
 			: dirLabel;
-		item.resourceUri = toWorkingChangeUri(file.path, file.status);
 		item.checkboxState =
 			file.state === 'staged' ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
 		item.contextValue = file.state === 'staged' ? 'workingChangeStaged' : 'workingChangeUnstaged';

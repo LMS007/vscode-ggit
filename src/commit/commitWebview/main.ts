@@ -68,7 +68,8 @@ function renderStaged(files: CommitStagedFile[], insertions: number, deletions: 
 			return (
 				`<div class="file-row">` +
 				`<input type="checkbox" class="file-checkbox" data-path="${escapeHtml(f.path)}"${f.staged ? ' checked' : ''} />` +
-				`<span class="file-status status-${f.status}">${f.status}</span>` +
+				// "!" for a conflicted file, matching Working Copy's badge (see WorkingChangeDecorationProvider).
+				`<span class="file-status status-${f.status}">${f.status === 'U' ? '!' : f.status}</span>` +
 				`<span class="file-name">${escapeHtml(f.path)}${suffix}</span></div>`
 			);
 		})

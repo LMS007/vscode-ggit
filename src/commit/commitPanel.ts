@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { confirmStagingConflicts } from '../git/gitActions';
 import { GitService } from '../git/gitService';
 import { CommitHostMessage, CommitWebviewMessage } from './commitProtocol';
 
@@ -120,10 +121,15 @@ export class CommitPanel {
 			case 'draftChanged':
 				void this.context.globalState.update(DRAFT_STATE_KEY, { subject: msg.subject, body: msg.body } satisfies CommitDraft);
 				break;
+			// Staging a conflicted file marks it resolved, same as from Working Copy -- see
+			// confirmStagingConflicts. Declining just re-sends the list below, unchecking it again.
 			case 'setStaged':
 				try {
 					if (msg.staged) {
-						await this.gitService.stageFile(msg.path);
+						const conflicted = (await this.gitService.getConflictedFiles()).map(f => f.path).filter(p => p === msg.path);
+						if (await confirmStagingConflicts(this.gitService, conflicted)) {
+							await this.gitService.stageFile(msg.path);
+						}
 					} else {
 						await this.gitService.unstageFile(msg.path);
 					}
@@ -136,7 +142,10 @@ export class CommitPanel {
 			case 'setAllStaged':
 				try {
 					if (msg.staged) {
-						await this.gitService.stageAll();
+						const conflicted = (await this.gitService.getConflictedFiles()).map(f => f.path);
+						if (await confirmStagingConflicts(this.gitService, conflicted)) {
+							await this.gitService.stageAll();
+						}
 					} else {
 						await this.gitService.unstageAll();
 					}
@@ -374,6 +383,7 @@ export class CommitPanel {
 		.status-M { color: var(--vscode-gitDecoration-modifiedResourceForeground, #d80); }
 		.status-D { color: var(--vscode-gitDecoration-deletedResourceForeground, #d44); }
 		.status-R, .status-C { color: var(--vscode-gitDecoration-renamedResourceForeground, #48d); }
+		.status-U { color: var(--vscode-gitDecoration-conflictingResourceForeground, #e4676b); }
 		.file-name {
 			overflow: hidden;
 			text-overflow: ellipsis;

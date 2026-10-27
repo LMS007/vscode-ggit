@@ -904,6 +904,14 @@ export class GitService {
 		await this.git.raw(['clean', '-f', '--', relPath]);
 	}
 
+	/** Whether HEAD has this path at all -- discarding a conflicted file means going back to HEAD's
+	 * version, and one that only exists on the other side of the conflict (e.g. "deleted by us") has
+	 * none to go back to, so it's discarded like a new file instead. */
+	async existsAtHead(relPath: string): Promise<boolean> {
+		const out = await this.git.raw(['ls-tree', '--name-only', 'HEAD', '--', relPath]);
+		return out.trim().length > 0;
+	}
+
 	/** Commits whatever's currently staged. Git itself rejects this with "nothing added to commit" if
 	 * the index is empty and `amend` isn't set — no smart-commit fallback to staging everything,
 	 * matching the rest of GGit's explicit stage/unstage model rather than the built-in Git extension's
@@ -1012,14 +1020,18 @@ export class GitService {
 	 * picking one side and silently hiding the other — there's no single FileStatus that could
 	 * represent both. Verified against real `git status` output for a partially-staged file before
 	 * relying on this: index and working_dir really do come back as two independent, simultaneously
-	 * non-blank codes in that case. Excludes anything with an unresolved merge conflict — those get
-	 * their own section via getConflictedFiles instead of showing up as an ordinary change. */
+	 * non-blank codes in that case. A file with an unresolved merge conflict is always one unstaged
+	 * 'U' row instead, whatever its two columns say -- staging it is what marks it resolved. Kept in
+	 * this list rather than left to the Conflicts tab, since not every conflict comes with an
+	 * operation for that tab to open on: a `git stash apply` that conflicts leaves no MERGE_HEAD or
+	 * similar behind, so these rows are the only place its conflicts show up at all. */
 	async getWorkingChanges(): Promise<WorkingChangeFile[]> {
 		const status = await this.git.status();
 		const conflicted = new Set(status.conflicted);
 		const changes: WorkingChangeFile[] = [];
 		for (const f of status.files) {
 			if (conflicted.has(f.path)) {
+				changes.push({ path: f.path, status: 'U', state: 'unstaged' });
 				continue;
 			}
 			if (f.index === '?') {

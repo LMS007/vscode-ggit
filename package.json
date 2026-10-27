@@ -474,7 +474,7 @@
         },
         {
           "command": "ggit.stashSelectedFiles",
-          "when": "view == ggitWorkingCopy && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeConflicted' && (viewItem != 'createCommitAction' || ggit.workingCopyMixedSelection)",
           "group": "1_modification"
         },
         {

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { GGIT_SHOW_SCHEME, INDEX_REF } from '../diff/showContentProvider';
+import { saveOpenDocumentIfDirty } from '../documentUtils';
 import { GitService, parseStashSubject, splitRemoteBranch } from './gitService';
 import { PickOperation, WorkingChangeFile } from './types';
 
@@ -435,15 +436,26 @@ export async function applyCommitToCurrentBranch(gitService: GitService, operati
 /** Confirms, with wording tailored to what's actually about to happen — a new/untracked file gets
  * permanently deleted (there's no committed state to fall back to), a deleted file gets restored,
  * and anything else just gets its edits reverted to HEAD/index. A mixed selection gets a single
- * combined confirmation covering every category present. */
+ * combined confirmation covering every category present. A conflicted file goes back to HEAD's
+ * version like any other change, which also resolves its conflict -- unless HEAD doesn't have it at
+ * all (e.g. "deleted by us"), in which case discarding it deletes it. */
 export async function discardWorkingChanges(gitService: GitService, files: WorkingChangeFile[]): Promise<void> {
 	if (files.length === 0) {
 		return;
 	}
 
+	const conflictsNotAtHead = new Set<string>();
+	for (const f of files) {
+		if (f.status === 'U' && !(await gitService.existsAtHead(f.path))) {
+			conflictsNotAtHead.add(f.path);
+		}
+	}
 	const newFiles = files.filter(f => f.status === 'A' || f.status === '?');
 	const deletedFiles = files.filter(f => f.status === 'D');
-	const otherFiles = files.filter(f => f.status !== 'A' && f.status !== '?' && f.status !== 'D');
+	const removedConflicts = files.filter(f => conflictsNotAtHead.has(f.path));
+	const otherFiles = files.filter(
+		f => f.status !== 'A' && f.status !== '?' && f.status !== 'D' && !conflictsNotAtHead.has(f.path)
+	);
 
 	let message: string;
 	let confirmLabel: string;
@@ -452,6 +464,12 @@ export async function discardWorkingChanges(gitService: GitService, files: Worki
 		if (newFiles.length === 1) {
 			message = `Delete "${fileName}"? It's a new file with no commit history, so this can't be undone.`;
 			confirmLabel = 'Delete File';
+		} else if (removedConflicts.length === 1) {
+			message = `Delete "${fileName}"? HEAD doesn't have this file, so discarding its conflict deletes it. This can't be undone.`;
+			confirmLabel = 'Delete File';
+		} else if (files[0].status === 'U') {
+			message = `Discard changes in "${fileName}"? This resolves its conflict by going back to HEAD's version, and is irreversible.`;
+			confirmLabel = 'Discard Changes';
 		} else if (deletedFiles.length === 1) {
 			message = `Restore "${fileName}"?`;
 			confirmLabel = 'Restore File';
@@ -470,6 +488,11 @@ export async function discardWorkingChanges(gitService: GitService, files: Worki
 		if (newFiles.length > 0) {
 			parts.push(`permanently delete ${newFiles.length} new file${newFiles.length === 1 ? '' : 's'}`);
 		}
+		if (removedConflicts.length > 0) {
+			parts.push(
+				`delete ${removedConflicts.length} conflicted file${removedConflicts.length === 1 ? '' : 's'} that HEAD doesn't have`
+			);
+		}
 		message = `This will ${joinWithAnd(parts)}. This is irreversible.`;
 		confirmLabel = 'Continue';
 	}
@@ -480,12 +503,43 @@ export async function discardWorkingChanges(gitService: GitService, files: Worki
 	}
 
 	for (const f of files) {
-		if (f.status === 'A' || f.status === '?') {
+		if (f.status === 'A' || f.status === '?' || conflictsNotAtHead.has(f.path)) {
 			await gitService.discardNewFile(f.path);
 		} else {
 			await gitService.discardChanges(f.path);
 		}
 	}
+}
+
+/** A line starting a conflict's "ours" or ending its "theirs" side. `=======` alone is left out --
+ * plenty of ordinary files (Markdown/RST underlines) have one. */
+const CONFLICT_MARKER = /^(<{7}|>{7})(\s|$)/m;
+
+/** Staging a conflicted file is what marks it resolved, and git stages exactly what's on disk --
+ * conflict markers and all. So any open copy with unsaved edits is saved first (see
+ * saveOpenDocumentIfDirty), and, like the built-in Git extension, this asks before staging a file
+ * that still has markers in it. Returns whether to go ahead with the stage. */
+export async function confirmStagingConflicts(gitService: GitService, conflictedPaths: string[]): Promise<boolean> {
+	const withMarkers: string[] = [];
+	for (const relPath of conflictedPaths) {
+		const absPath = gitService.resolveRepoPath(relPath);
+		await saveOpenDocumentIfDirty(absPath);
+		// Nothing on disk to check when the conflict is one side deleting the file.
+		const content = await fs.promises.readFile(absPath, 'utf8').catch(() => '');
+		if (CONFLICT_MARKER.test(content)) {
+			withMarkers.push(relPath);
+		}
+	}
+	if (withMarkers.length === 0) {
+		return true;
+	}
+	const names = withMarkers.map(p => path.basename(p));
+	const message =
+		withMarkers.length === 1
+			? `"${names[0]}" still has conflict markers in it. Mark it resolved anyway?`
+			: `${withMarkers.length} files still have conflict markers in them: ${names.join(', ')}. Mark them resolved anyway?`;
+	const confirmLabel = 'Mark Resolved';
+	return (await vscode.window.showWarningMessage(message, { modal: true }, confirmLabel)) === confirmLabel;
 }
 
 function joinWithAnd(parts: string[]): string {
@@ -541,7 +595,22 @@ export async function applyStashWithPicker(gitService: GitService): Promise<void
 		{ placeHolder: 'Select a stash to apply', ignoreFocusOut: true }
 	);
 	if (picked) {
-		await gitService.applyStash(picked.stash.ref);
+		await applyStashReportingConflicts(gitService, picked.stash.ref);
+	}
+}
+
+/** A `git stash apply` that stops on conflicts resolves rather than throws (git reports them on
+ * stdout alone -- see GitService.mergeBranch), and leaves nothing like MERGE_HEAD behind for the
+ * Conflicts tab to open on, so on its own it looks exactly like a clean apply. The conflicted files
+ * themselves show up in Working Copy. */
+export async function applyStashReportingConflicts(gitService: GitService, ref: string): Promise<void> {
+	await gitService.applyStash(ref);
+	const conflicted = await gitService.getConflictedFiles();
+	if (conflicted.length > 0) {
+		void vscode.window.showWarningMessage(
+			`GGit: Applying ${ref} left conflicts in ${conflicted.length} file${conflicted.length === 1 ? '' : 's'} -- ` +
+				'they\'re marked "!" in Working Copy. Resolve each one, then check it to mark it resolved. The stash is kept.'
+		);
 	}
 }
 
