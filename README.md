@@ -31,6 +31,10 @@ window's integrated terminal instead.
 
 ## Features
 
+**New repository**: in a folder that isn't a git repo yet, Working Copy offers **Initialize
+Repository Here** or **Create in New Subfolder…** (then offers to open that folder, since GGit
+works on the open folder). The first branch is `main` unless `init.defaultBranch` says otherwise.
+
 **Working Copy**
 - Checkbox stages/unstages. A partly staged file shows as two rows, `(staged)` and `(unstaged)`.
 - Pinned **Create Commit** row: check/uncheck all, staged count, click to open the Commit panel.

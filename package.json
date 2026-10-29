@@ -56,25 +56,36 @@
         {
           "id": "ggitBranches",
           "name": "Branches",
+          "when": "!ggit.notARepo",
           "initialSize": 5
         },
         {
           "id": "ggitRemotes",
           "name": "Remotes",
+          "when": "!ggit.notARepo",
           "initialSize": 3
         },
         {
           "id": "ggitTags",
           "name": "Tags",
+          "when": "!ggit.notARepo",
           "initialSize": 2
         },
         {
           "id": "ggitStashes",
           "name": "Stashes",
+          "when": "!ggit.notARepo",
           "initialSize": 2
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "ggitWorkingCopy",
+        "contents": "This folder isn't a git repository yet.\n[Initialize Repository Here](command:ggit.initRepo)\nOr make a new folder inside this one and start the repository there:\n[Create in New Subfolder…](command:ggit.initRepoInSubfolder)",
+        "when": "ggit.notARepo"
+      }
+    ],
     "commands": [
       {
         "command": "ggit.openBranchHistory",
@@ -149,6 +160,14 @@
         "command": "ggit.pickAbort",
         "title": "GGit: Abort Cherry-Pick or Revert",
         "icon": "$(circle-slash)"
+      },
+      {
+        "command": "ggit.initRepo",
+        "title": "GGit: Initialize Repository"
+      },
+      {
+        "command": "ggit.initRepoInSubfolder",
+        "title": "GGit: Create Repository in New Subfolder…"
       },
       {
         "command": "ggit.refresh",
@@ -458,22 +477,22 @@
         },
         {
           "command": "ggit.applyStash",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && !ggit.notARepo",
           "group": "navigation@0"
         },
         {
           "command": "ggit.stashAll",
-          "when": "view == ggitWorkingCopy",
+          "when": "view == ggitWorkingCopy && !ggit.notARepo",
           "group": "navigation@1"
         },
         {
           "command": "ggit.workingCopyViewAsTree",
-          "when": "view == ggitWorkingCopy && config.ggit.workingCopy.viewMode != 'tree'",
+          "when": "view == ggitWorkingCopy && config.ggit.workingCopy.viewMode != 'tree' && !ggit.notARepo",
           "group": "navigation@2"
         },
         {
           "command": "ggit.workingCopyViewAsList",
-          "when": "view == ggitWorkingCopy && config.ggit.workingCopy.viewMode == 'tree'",
+          "when": "view == ggitWorkingCopy && config.ggit.workingCopy.viewMode == 'tree' && !ggit.notARepo",
           "group": "navigation@2"
         },
         {
@@ -654,6 +673,14 @@
         {
           "command": "ggit.workingCopySelectAll",
           "when": "false"
+        },
+        {
+          "command": "ggit.initRepo",
+          "when": "ggit.notARepo"
+        },
+        {
+          "command": "ggit.initRepoInSubfolder",
+          "when": "ggit.notARepo"
         }
       ],
       "ggit.ignoreSubmenu": [

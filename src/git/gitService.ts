@@ -332,10 +332,19 @@ export class GitService {
 		}
 	}
 
-	/** Returns the current branch name, or undefined if HEAD is detached. */
+	/** Returns the current branch name, or undefined if HEAD is detached. `branch --show-current`
+	 * rather than `rev-parse --abbrev-ref HEAD`, which fails outright in a repo with no commits yet --
+	 * its branch only exists in name, but that's still the branch the first commit lands on. */
 	async getCurrentBranch(): Promise<string | undefined> {
-		const name = (await this.git.raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
-		return name === 'HEAD' ? undefined : name;
+		return (await this.git.raw(['branch', '--show-current'])).trim() || undefined;
+	}
+
+	/** `git init` in `dir` -- the workspace folder, or a folder inside it. With no init.defaultBranch
+	 * configured the first branch is "main", like VS Code's own Initialize Repository, not git's
+	 * "master". A missing key reads as empty, same as in getRemoteUrls. */
+	async initRepo(dir: string): Promise<void> {
+		const configured = (await this.git.raw(['config', '--get', 'init.defaultBranch'])).trim();
+		await this.git.raw(['init', ...(configured ? [] : ['--initial-branch=main']), dir]);
 	}
 
 	/** Checked live (not from a cached branch list) because the whole point is to catch another

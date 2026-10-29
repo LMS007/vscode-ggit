@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CreateBranchPanel } from './branch/createBranchPanel';
@@ -188,6 +189,32 @@ export function activate(context: vscode.ExtensionContext): void {
 		activeConflictOperation = operation;
 	};
 
+	// `ggit.notARepo` swaps an empty Working Copy for its Initialize Repository welcome (viewsWelcome in
+	// package.json) and hides the views that have nothing to show without a repo. Re-checked on every
+	// refresh, so a `git init` from the terminal -- or an `rm -rf .git` -- flips it too. Undefined until
+	// the first check answers, which leaves every view showing in the meantime rather than briefly
+	// hiding them in the usual case, a folder that is a repo.
+	let notARepo: boolean | undefined;
+	const updateRepoContext = async () => {
+		let isRepo: boolean;
+		try {
+			isRepo = await gitService.isGitRepository();
+		} catch {
+			// Can't tell (no git on PATH, a "dubious ownership" refusal, ...) -- initializing wouldn't help.
+			return;
+		}
+		if (notARepo !== !isRepo) {
+			const wasNotARepo = notARepo;
+			notARepo = !isRepo;
+			void vscode.commands.executeCommand('setContext', 'ggit.notARepo', notARepo);
+			if (wasNotARepo) {
+				// Defined further down -- only reachable after a check that already found no repo, so long
+				// after activate() is done.
+				watchGitDir();
+			}
+		}
+	};
+
 	const refreshAll = () => {
 		branchesProvider.refresh();
 		remotesProvider.refresh();
@@ -199,6 +226,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		workingChangeDecorations.refresh();
 		showContentProvider.refresh();
 		void updateWorkingCopyBadge();
+		void updateRepoContext();
 		void updateConflictContext();
 		void updateActiveBranchLabel();
 		CommitPanel.refreshIfOpen();
@@ -332,6 +360,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	});
 
 	void updateWorkingCopyBadge();
+	void updateRepoContext();
 	void updateConflictContext();
 	void updateActiveBranchLabel();
 
@@ -370,6 +399,55 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand('ggit.refresh', () => {
 			refreshAll();
+		}),
+
+		// Both offered from Working Copy's welcome content while the folder isn't a repo (see updateRepoContext).
+		vscode.commands.registerCommand('ggit.initRepo', () =>
+			runGitOperation(
+				`Initializing a repository in ${workspaceFolder.name}…`,
+				() => gitService.initRepo(workspaceFolder.uri.fsPath),
+				refreshAll
+			)
+		),
+
+		// GGit only ever shows the folder VS Code has open, so a repo made in a subfolder stays invisible
+		// here until that folder's opened -- hence offering to open it, like the built-in Git extension
+		// does after initializing a folder outside the workspace.
+		vscode.commands.registerCommand('ggit.initRepoInSubfolder', async () => {
+			const root = workspaceFolder.uri.fsPath;
+			const name = (
+				await vscode.window.showInputBox({
+					title: 'Create Repository in New Subfolder',
+					prompt: `A folder inside ${workspaceFolder.name}, created if it doesn't exist yet.`,
+					placeHolder: 'Folder name',
+					validateInput: value => validateNewRepoFolder(root, value),
+				})
+			)?.trim();
+			if (!name) {
+				return;
+			}
+			const dir = vscode.Uri.file(path.resolve(root, name));
+			try {
+				await vscode.window.withProgress(
+					{ location: vscode.ProgressLocation.Notification, title: `Creating a repository in ${name}…` },
+					async () => {
+						await vscode.workspace.fs.createDirectory(dir);
+						await gitService.initRepo(dir.fsPath);
+					}
+				);
+			} catch (err) {
+				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				return;
+			}
+			const choice = await vscode.window.showInformationMessage(
+				`Created a repository in "${name}". Open it?`,
+				{ modal: true, detail: `GGit works on the folder VS Code has open, so open ${name} to use it here.` },
+				'Open',
+				'Open in New Window'
+			);
+			if (choice) {
+				await vscode.commands.executeCommand('vscode.openFolder', dir, { forceNewWindow: choice === 'Open in New Window' });
+			}
 		}),
 
 		// createInputBox (not the simpler showInputBox) specifically because onDidChangeValue fires on
@@ -1098,25 +1176,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	// Keep the trees (and any open history tab) in sync with out-of-band changes, e.g. a branch checkout
 	// or fetch run from the integrated terminal.
-	const gitDirWatcher = vscode.workspace.createFileSystemWatcher(
-		new vscode.RelativePattern(
-			vscode.Uri.joinPath(workspaceFolder.uri, '.git'),
-			// rebase-merge/rebase-apply are the directories git creates for the duration of an
-			// in-progress rebase (conflicted or not) — watching them is what lets the Conflicts view
-			// and its `ggit.rebaseInProgress` context key react promptly to a rebase starting, pausing
-			// on a conflict, or finishing/aborting, including one driven from the integrated terminal.
-			// MERGE_HEAD does the same for a stopped merge (`ggit.mergeInProgress`), and CHERRY_PICK_HEAD /
-			// REVERT_HEAD for a stopped cherry-pick or revert (`ggit.pickInProgress`).
-			// worktrees/** is git's per-linked-worktree admin dir — a subdirectory appears/disappears
-			// on `git worktree add`/`remove`, and each one's own HEAD file changes when that worktree
-			// switches branches, which is exactly the state Branches' blue/"checked out elsewhere"
-			// styling depends on. This only sees other worktrees because GGit's own workspace folder is
-			// always the *main* checkout today (no worktree-switching UI yet) — its .git is the real,
-			// shared git dir, not a per-worktree pointer file. If GGit ever opens from inside a linked
-			// worktree instead, this would need to watch the resolved git-common-dir rather than a
-			// hardcoded ".git" under the workspace folder.
-			'{HEAD,MERGE_HEAD,CHERRY_PICK_HEAD,REVERT_HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}'
-		)
+	const gitDirPattern = new vscode.RelativePattern(
+		vscode.Uri.joinPath(workspaceFolder.uri, '.git'),
+		// rebase-merge/rebase-apply are the directories git creates for the duration of an
+		// in-progress rebase (conflicted or not) — watching them is what lets the Conflicts view
+		// and its `ggit.rebaseInProgress` context key react promptly to a rebase starting, pausing
+		// on a conflict, or finishing/aborting, including one driven from the integrated terminal.
+		// MERGE_HEAD does the same for a stopped merge (`ggit.mergeInProgress`), and CHERRY_PICK_HEAD /
+		// REVERT_HEAD for a stopped cherry-pick or revert (`ggit.pickInProgress`).
+		// worktrees/** is git's per-linked-worktree admin dir — a subdirectory appears/disappears
+		// on `git worktree add`/`remove`, and each one's own HEAD file changes when that worktree
+		// switches branches, which is exactly the state Branches' blue/"checked out elsewhere"
+		// styling depends on. This only sees other worktrees because GGit's own workspace folder is
+		// always the *main* checkout today (no worktree-switching UI yet) — its .git is the real,
+		// shared git dir, not a per-worktree pointer file. If GGit ever opens from inside a linked
+		// worktree instead, this would need to watch the resolved git-common-dir rather than a
+		// hardcoded ".git" under the workspace folder.
+		'{HEAD,MERGE_HEAD,CHERRY_PICK_HEAD,REVERT_HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}'
 	);
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 	// Logged unconditionally (not just on a cache-miss) so a silent watcher -- e.g. `files.watcherExclude`
@@ -1131,10 +1207,19 @@ export function activate(context: vscode.ExtensionContext): void {
 			BranchHistoryPanel.refreshIfOpen();
 		}, 300);
 	};
-	gitDirWatcher.onDidChange(onGitDirChange);
-	gitDirWatcher.onDidCreate(onGitDirChange);
-	gitDirWatcher.onDidDelete(onGitDirChange);
-	context.subscriptions.push(gitDirWatcher);
+	// Also re-run by updateRepoContext each time a folder that wasn't a repo becomes one: in a real VS
+	// Code test, a watcher created before .git existed never reported anything inside it afterwards,
+	// not even that .git being deleted again.
+	let gitDirWatcher: vscode.FileSystemWatcher | undefined;
+	const watchGitDir = () => {
+		gitDirWatcher?.dispose();
+		gitDirWatcher = vscode.workspace.createFileSystemWatcher(gitDirPattern);
+		gitDirWatcher.onDidChange(onGitDirChange);
+		gitDirWatcher.onDidCreate(onGitDirChange);
+		gitDirWatcher.onDidDelete(onGitDirChange);
+	};
+	watchGitDir();
+	context.subscriptions.push({ dispose: () => gitDirWatcher?.dispose() });
 
 	// Editing or deleting a tracked file never touches anything under .git, so the watcher above
 	// can't see it — this is what actually keeps Working Copy's status/badges in sync with a plain
@@ -1197,6 +1282,12 @@ export function activate(context: vscode.ExtensionContext): void {
 	const onWorkingTreeChange = (uri: vscode.Uri) => {
 		if (uri.fsPath.includes(`${path.sep}.git${path.sep}`) || uri.fsPath.endsWith(`${path.sep}.git`)) {
 			// Already covered by gitDirWatcher above -- skip to avoid double-refreshing on every commit/checkout.
+			// Except while the folder isn't a repo, when gitDirWatcher has no .git to watch yet, and for the
+			// .git folder itself: an `rm -rf .git` arrives as that one deletion, which gitDirWatcher's
+			// patterns don't match. Both share onGitDirChange's debounce, so an overlap is still one refresh.
+			if (notARepo || uri.fsPath.endsWith(`${path.sep}.git`)) {
+				onGitDirChange(uri);
+			}
 			return;
 		}
 		pendingWorkingTreeChanges.add(uri.fsPath);
@@ -1231,6 +1322,31 @@ function resolveSingleWorkingChangeFile(
 	}
 	const nodes = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
 	return nodes.find(isWorkingChangeFile);
+}
+
+/** For Create Repository in New Subfolder: a path inside `root` that isn't a file or already a repo.
+ * An existing folder is allowed -- that's how to put a project that's already there under git -- just
+ * flagged, so it's not a surprise. Empty passes; the command treats it as a cancel. */
+function validateNewRepoFolder(root: string, value: string): string | vscode.InputBoxValidationMessage | undefined {
+	const name = value.trim();
+	if (!name) {
+		return undefined;
+	}
+	const dir = path.resolve(root, name);
+	const relative = path.relative(root, dir);
+	if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+		return `Pick a folder inside ${path.basename(root)}.`;
+	}
+	if (!fs.existsSync(dir)) {
+		return undefined;
+	}
+	if (!fs.statSync(dir).isDirectory()) {
+		return `"${name}" is a file, not a folder.`;
+	}
+	if (fs.existsSync(path.join(dir, '.git'))) {
+		return `"${name}" is already a git repository.`;
+	}
+	return { message: `"${name}" already exists -- the repository will be created in it.`, severity: vscode.InputBoxValidationSeverity.Info };
 }
 
 /** Tree items don't have a native double-click event, so we detect one ourselves: two clicks on the
