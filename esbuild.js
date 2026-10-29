@@ -119,11 +119,11 @@ async function main() {
 		],
 	});
 
-	// The add-remote form is a fifth, independent webview (a simple form, no commit browser), so it
+	// The add/edit-remote form is a fifth, independent webview (a simple form, no commit browser), so it
 	// gets its own bundle rather than sharing another panel's.
-	const addRemoteWebviewCtx = await esbuild.context({
+	const remoteWebviewCtx = await esbuild.context({
 		entryPoints: [
-			'src/remote/addRemoteWebview/main.ts'
+			'src/remote/remoteWebview/main.ts'
 		],
 		bundle: true,
 		format: 'iife',
@@ -131,7 +131,7 @@ async function main() {
 		sourcemap: !production,
 		sourcesContent: false,
 		platform: 'browser',
-		outfile: 'dist/addRemoteWebview.js',
+		outfile: 'dist/remoteWebview.js',
 		logLevel: 'silent',
 		plugins: [
 			esbuildProblemMatcherPlugin,
@@ -218,7 +218,7 @@ async function main() {
 		commitFilesWebviewCtx,
 		createBranchWebviewCtx,
 		commitWebviewCtx,
-		addRemoteWebviewCtx,
+		remoteWebviewCtx,
 		conflictsWebviewCtx,
 		mergeWebviewCtx,
 		tagWebviewCtx,

@@ -56,8 +56,9 @@ the panel and reloading the window.
   `git checkout -b alice/feature-x origin/main` sets up) gets asked before pulling it, and offered
   its own remote branch instead.
 
-**Remotes**: browse and check out remote branches, live search, Add Remote, Remove Remote
-(right-click a remote), Delete Remote Branch.
+**Remotes**: browse and check out remote branches, live search, Add Remote, Edit Remote and
+Remove Remote (right-click a remote; Edit shows and changes its name, URL, and push URL), Delete
+Remote Branch.
 **Sync** fetches every remote: downloads new branches and removes ones deleted on the remote.
 
 **Tags**: green = on a remote, purple = local only, orange = differs from the remote, cloud icon =

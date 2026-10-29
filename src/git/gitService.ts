@@ -294,6 +294,44 @@ export class GitService {
 		return (await this.git.raw(['remote', 'get-url', name])).trim() || undefined;
 	}
 
+	/** The remote's URLs exactly as configured, for the Edit Remote form -- not `remote get-url`, which
+	 * applies url.*.insteadOf rewrites, so saving its output back would bake a rewrite into the config.
+	 * The first of each, the one `remote set-url` replaces. `pushUrl` is empty unless a separate
+	 * remote.<name>.pushurl is set. A missing key reads as empty: git exits 1 with no output, which
+	 * raw() doesn't reject on. */
+	async getRemoteUrls(name: string): Promise<{ url: string; pushUrl: string }> {
+		const [url, pushUrl] = await Promise.all(
+			['url', 'pushurl'].map(async key => (await this.git.raw(['config', '--get-all', `remote.${name}.${key}`])).split('\n')[0].trim())
+		);
+		return { url, pushUrl };
+	}
+
+	/** `git remote rename` -- also renames its remote-tracking branches and repoints every local branch
+	 * tracking it, so nothing else needs fixing up afterwards. */
+	async renameRemote(oldName: string, newName: string): Promise<void> {
+		assertNotOptionLike(oldName, 'remote name');
+		assertNotOptionLike(newName, 'remote name');
+		await this.git.raw(['remote', 'rename', oldName, newName]);
+	}
+
+	/** `git remote set-url` -- also where the remote pushes, unless it has a separate push URL. */
+	async setRemoteUrl(name: string, url: string): Promise<void> {
+		assertNotOptionLike(name, 'remote name');
+		assertNotOptionLike(url, 'remote URL');
+		await this.git.raw(['remote', 'set-url', name, url]);
+	}
+
+	/** Sets the remote's separate push URL, or with none, removes it so pushes go to its regular URL. */
+	async setRemotePushUrl(name: string, pushUrl: string | undefined): Promise<void> {
+		assertNotOptionLike(name, 'remote name');
+		if (pushUrl) {
+			assertNotOptionLike(pushUrl, 'push URL');
+			await this.git.raw(['remote', 'set-url', '--push', name, pushUrl]);
+		} else {
+			await this.git.raw(['config', '--unset-all', `remote.${name}.pushurl`]);
+		}
+	}
+
 	/** Returns the current branch name, or undefined if HEAD is detached. */
 	async getCurrentBranch(): Promise<string | undefined> {
 		const name = (await this.git.raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();

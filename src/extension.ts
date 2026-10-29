@@ -5,7 +5,7 @@ import { CommitLauncherViewProvider } from './commit/commitLauncherView';
 import { CommitPanel } from './commit/commitPanel';
 import { BranchHistoryPanel } from './history/branchHistoryPanel';
 import { CommitFilesPanel } from './history/commitFilesPanel';
-import { AddRemotePanel } from './remote/addRemotePanel';
+import { RemotePanel } from './remote/remotePanel';
 import { ConflictOperation } from './conflicts/conflictsProtocol';
 import { ConflictsPanel } from './conflicts/conflictsPanel';
 import { MergePanel } from './merge/mergePanel';
@@ -390,7 +390,21 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 
 		vscode.commands.registerCommand('ggit.addRemote', () => {
-			AddRemotePanel.createOrShow(context, gitService, refreshAll);
+			RemotePanel.createOrShow(context, gitService, refreshAll);
+		}),
+
+		// Same remote-row guard as ggit.removeRemote below. A rename or new URL changes what the Tags
+		// view's remote half should show, hence refreshing that too.
+		vscode.commands.registerCommand('ggit.editRemote', async (node?: BranchTreeNode<RemoteBranchInfo>) => {
+			if (node?.kind !== 'folder' || node.id.includes('/')) {
+				return;
+			}
+			try {
+				const urls = await gitService.getRemoteUrls(node.name);
+				RemotePanel.createOrShow(context, gitService, refreshAllAndRemoteTags, { name: node.name, ...urls });
+			} catch (err) {
+				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+			}
 		}),
 
 		// Offered on a remote's own top-level row (contextValue 'remoteRoot', see RemotesTreeProvider), so
