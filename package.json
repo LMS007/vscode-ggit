@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "publisher": "kylekeating",
   "repository": {
     "type": "git",
@@ -132,8 +132,16 @@
       },
       {
         "command": "ggit.rebase",
-        "title": "GGit: Rebase",
+        "title": "GGit: Rebase…",
         "icon": "$(git-merge)"
+      },
+      {
+        "command": "ggit.rebaseOntoBranch",
+        "title": "Rebase Current Branch onto This…"
+      },
+      {
+        "command": "ggit.removeWorktree",
+        "title": "Remove Worktree…"
       },
       {
         "command": "ggit.rebaseContinue",
@@ -597,6 +605,16 @@
           "group": "2_modify@3"
         },
         {
+          "command": "ggit.rebaseOntoBranch",
+          "when": "view == ggitBranches && viewItem =~ /^branch-(normal|other-worktree)$/",
+          "group": "3_rebase@1"
+        },
+        {
+          "command": "ggit.removeWorktree",
+          "when": "view == ggitBranches && viewItem == branch-other-worktree",
+          "group": "9_delete@0"
+        },
+        {
           "command": "ggit.deleteLocalBranch",
           "when": "view == ggitBranches && viewItem =~ /^branch-/",
           "group": "9_delete@1"
@@ -632,6 +650,11 @@
           "group": "9_delete@1"
         },
         {
+          "command": "ggit.rebaseOntoBranch",
+          "when": "view == ggitRemotes && viewItem == remoteBranch",
+          "group": "3_rebase@1"
+        },
+        {
           "command": "ggit.deleteRemoteBranch",
           "when": "view == ggitRemotes && viewItem == remoteBranch",
           "group": "9_delete@1"
@@ -650,6 +673,14 @@
       "commandPalette": [
         {
           "command": "ggit.deleteRemoteBranch",
+          "when": "false"
+        },
+        {
+          "command": "ggit.rebaseOntoBranch",
+          "when": "false"
+        },
+        {
+          "command": "ggit.removeWorktree",
           "when": "false"
         },
         {

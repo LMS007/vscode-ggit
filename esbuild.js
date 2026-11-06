@@ -212,8 +212,27 @@ async function main() {
 		],
 	});
 
+	// The Rebase tab (onto, which commits to replay, a live preview) -- a form like Merge's.
+	const rebaseWebviewCtx = await esbuild.context({
+		entryPoints: [
+			'src/rebase/rebaseWebview/main.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/rebaseWebview.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	});
+
 	const contexts = [
 		extensionCtx,
+		rebaseWebviewCtx,
 		webviewCtx,
 		commitFilesWebviewCtx,
 		createBranchWebviewCtx,

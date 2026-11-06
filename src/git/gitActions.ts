@@ -519,7 +519,12 @@ export async function deleteLocalBranch(gitService: GitService, branchName: stri
 	if (confirmed !== 'Delete Branch') {
 		return;
 	}
+	await deleteBranchWithEscalation(gitService, branchName);
+}
 
+/** The delete itself, once confirmed: `-d`, and only if git refuses that as not fully merged, a
+ * second confirmation for `-D`. */
+async function deleteBranchWithEscalation(gitService: GitService, branchName: string): Promise<void> {
 	try {
 		await gitService.deleteBranch(branchName);
 		return;
@@ -538,6 +543,62 @@ export async function deleteLocalBranch(gitService: GitService, branchName: stri
 		return;
 	}
 	await gitService.deleteBranch(branchName, true);
+}
+
+/** For a branch checked out in another worktree, which git won't delete while it's there: removes
+ * that worktree, and optionally the branch with it. The confirmation names the folder that goes,
+ * and warns when it holds uncommitted work -- git refuses to remove such a worktree unless forced,
+ * so going ahead past that warning is what forces it. A locked worktree is overridden the same way;
+ * one whose folder is already gone just has git's record of it cleared. The main worktree can't be
+ * removed at all. */
+export async function removeWorktreeOfBranch(gitService: GitService, branchName: string): Promise<void> {
+	const worktree = (await gitService.listWorktrees()).find(w => w.branch === branchName && !w.isCurrent);
+	if (!worktree) {
+		void vscode.window.showInformationMessage(`GGit: "${branchName}" isn't checked out in another worktree any more.`);
+		return;
+	}
+	if (worktree.isMain) {
+		throw new Error(
+			`"${branchName}" is checked out in the repo's main worktree, at ${worktree.path}, which git can't remove. Switch branches there instead.`
+		);
+	}
+	const missing = !fs.existsSync(worktree.path);
+	const changes = missing ? 0 : await gitService.countWorktreeChanges(worktree.path);
+	const locked = worktree.locked !== undefined;
+	const detail = [
+		missing
+			? `Its folder, ${worktree.path}, is already gone, so this only clears git's record of it.`
+			: `This deletes its folder, ${worktree.path}.`,
+		changes > 0
+			? `It has ${changes} file${changes === 1 ? '' : 's'} with uncommitted changes (untracked ones included). They'll be lost.`
+			: '',
+		locked ? `It's locked${worktree.locked ? ` ("${worktree.locked}")` : ''}, which this overrides.` : '',
+		`The branch "${branchName}" and its commits stay, unless you delete it too.`,
+	]
+		.filter(Boolean)
+		.join(' ');
+	const removeOnly = 'Remove Worktree';
+	const removeAndDelete = 'Remove Worktree and Delete Branch';
+	const choice = await vscode.window.showWarningMessage(
+		`Remove the worktree "${path.basename(worktree.path)}"?`,
+		{ modal: true, detail },
+		removeOnly,
+		removeAndDelete
+	);
+	if (!choice) {
+		return;
+	}
+	if (missing) {
+		if (locked) {
+			await gitService.unlockWorktree(worktree.path);
+		}
+		await gitService.pruneWorktrees();
+	} else {
+		await gitService.removeWorktree(worktree.path, { force: changes > 0, locked });
+	}
+	if (choice === removeAndDelete) {
+		await deleteBranchWithEscalation(gitService, branchName);
+	}
 }
 
 export async function renameLocalBranch(gitService: GitService, branchName: string): Promise<void> {
@@ -793,108 +854,9 @@ export async function confirmStagingConflicts(gitService: GitService, conflicted
 	return (await vscode.window.showWarningMessage(message, { modal: true }, confirmLabel)) === confirmLabel;
 }
 
-/** Whichever branch is currently checked out gets rebased; the branch picked here is what it's rebased
- * onto. Only local branches are offered — mirrors Create Branch's Starting Point picker — since
- * rebasing onto a remote branch you haven't fetched yet would just replay onto stale history anyway
- * (run Fetch/Pull first for that). `--autostash` is always on (see GitService.rebaseOnto), so there's
- * no "you have local changes" failure mode to expose a checkbox for, and interactive rebase
- * (reordering/squashing/rewording commits) is a big enough feature on its own that it's deliberately
- * left out of this first pass — this only ever does a non-interactive rebase.
- *
- * When other branches are stacked under the checked-out one, a second pick says what happens to them
- * (see pickRebasePlan). Once a rebase that moved some of them finishes, this offers to push them all
- * together. */
-export async function rebaseCurrentBranchWithPicker(gitService: GitService): Promise<void> {
-	const current = await gitService.getCurrentBranch();
-	requireCurrentBranch(current);
-
-	const branches = await gitService.listLocalBranches();
-	const picked = await vscode.window.showQuickPick(
-		branches.filter(b => b.name !== current).map(b => b.name),
-		{ placeHolder: `Rebase "${current}" onto…`, ignoreFocusOut: true }
-	);
-	if (!picked) {
-		return;
-	}
-	const plan = await pickRebasePlan(gitService, current, picked);
-	if (!plan) {
-		return;
-	}
-	await gitService.rebaseOnto(plan.onto, { upstream: plan.upstream, updateRefs: plan.updateRefs });
-	if (plan.moved.length > 0 && !(await gitService.isRebaseInProgress())) {
-		offerToPushBranches(gitService, current, plan.moved);
-	}
-}
-
-interface RebasePlan {
-	onto: string;
-	/** Replay only the commits after this branch (`rebase --onto <onto> <upstream>`). */
-	upstream?: string;
-	updateRefs: boolean;
-	/** The other branches the rebase moves along with the checked-out one. */
-	moved: string[];
-}
-
-/** With no other branch under `current` (see GitService.listBranchesBetween), a plain rebase. With
- * some -- a stack like main <- alice/a <- alice/b, rebasing alice/b onto main -- asks what to do with
- * them:
- *  - Rebase the stack: `--update-refs`, so alice/a moves along with alice/b.
- *  - "alice/a is already merged": `--onto main alice/a`, replaying only alice/b's own commits. What a
- *    stack needs once its parent is squash-merged: the parent's original commits never reach main
- *    (the squash is a new commit), so a plain rebase would replay them onto their own squashed copy.
- *    Branches between alice/a and alice/b still move along.
- *  - Rebase only alice/b: the plain rebase, leaving alice/a where it is.
- * Without git 2.38's --update-refs, the stack option is left out, and the others don't move anything
- * else. Undefined when the user backs out. */
-async function pickRebasePlan(gitService: GitService, current: string, onto: string): Promise<RebasePlan | undefined> {
-	const between = await gitService.listBranchesBetween(onto);
-	if (between.length === 0) {
-		return { onto, updateRefs: false, moved: [] };
-	}
-	const updateRefs = await gitService.supportsUpdateRefs();
-	const names = between.map(b => b.name);
-	const listed = joinWithAnd(names.map(n => `"${n}"`));
-	type PlanPick = vscode.QuickPickItem & { plan: RebasePlan };
-	const items: PlanPick[] = [];
-	if (updateRefs) {
-		items.push({
-			label: '$(layers) Rebase the stack',
-			description: `moves ${listed} too`,
-			detail: `For branches stacked on each other: all of them move onto "${onto}" along with "${current}".`,
-			plan: { onto, updateRefs: true, moved: names },
-		});
-	}
-	for (const branch of between) {
-		items.push({
-			label: `$(git-merge) "${branch.name}" is already merged into "${onto}"`,
-			description: branch.upstreamGone ? 'its remote branch is gone' : undefined,
-			detail: `Replays only the commits after "${branch.name}" (rebase --onto). Use this when "${branch.name}" was squash-merged.`,
-			plan: { onto, upstream: branch.name, updateRefs, moved: [] },
-		});
-	}
-	items.push({
-		label: `$(arrow-right) Rebase only "${current}"`,
-		description: `${listed} stay${names.length === 1 ? 's' : ''} where ${names.length === 1 ? 'it is' : 'they are'}`,
-		plan: { onto, updateRefs: false, moved: [] },
-	});
-	const pick = await vscode.window.showQuickPick(items, {
-		title: `Rebase "${current}" onto "${onto}"`,
-		placeHolder: `${listed} ${names.length === 1 ? 'is' : 'are'} under "${current}" too. What should happen to ${names.length === 1 ? 'it' : 'them'}?`,
-		ignoreFocusOut: true,
-	});
-	if (!pick) {
-		return undefined;
-	}
-	const { plan } = pick;
-	if (plan.upstream && plan.updateRefs) {
-		plan.moved = (await gitService.listBranchesBetween(plan.upstream)).map(b => b.name);
-	}
-	return plan;
-}
-
 /** After a rebase that moved other branches along with `current`, offers to push the published ones
  * together (see ggit.pushBranches). Doesn't wait for an answer, so the rebase's own progress closes. */
-function offerToPushBranches(gitService: GitService, current: string, moved: string[]): void {
+export function offerToPushBranches(gitService: GitService, current: string, moved: string[]): void {
 	void (async () => {
 		const branches = [current, ...moved];
 		const published = (await Promise.all(branches.map(async b => ((await gitService.getUpstreamBranch(b)) ? b : undefined)))).filter(

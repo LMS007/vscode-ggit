@@ -28,6 +28,18 @@ const RECORD_SEP = '\x1e';
 const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(FIELD_SEP);
 const STASH_FORMAT = ['%gd', '%H', '%s', '%aI'].join(FIELD_SEP);
 
+export interface WorktreeInfo {
+	path: string;
+	/** Undefined for a detached HEAD. */
+	branch?: string;
+	/** The worktree GGit itself is running in. */
+	isCurrent: boolean;
+	/** The repo's original checkout, which git won't remove. */
+	isMain: boolean;
+	/** Set when `git worktree lock` protects it from removal: the reason given, or "". */
+	locked?: string;
+}
+
 /** For a push, and anything else that runs the pre-push hook. */
 export interface PushOptions {
 	/** Skips the pre-push hook (`--no-verify`). */
@@ -70,12 +82,7 @@ export class GitService {
 		// needs (GIT_SSH_COMMAND, GIT_ASKPASS, GIT_SSL_CAINFO, ...), so it all passes through except
 		// GIT_EDITOR: that outranks the core.editor=true above and would leave a continue waiting on an
 		// editor nobody can see.
-		this.git = simpleGit({
-			baseDir: repoRoot,
-			binary: ['git', '--no-optional-locks'],
-			unsafe: { allowUnsafeEditor: true },
-			allowEnvironment: Object.keys(process.env).filter(key => key.toLowerCase() !== 'git_editor'),
-		});
+		this.git = createGit(repoRoot);
 		// One handler for every git process this instance spawns (simple-git only has the one slot).
 		this.git.outputHandler((_binary, stdout, stderr, args) => this.onGitSpawned(args, stdout, stderr));
 	}
@@ -242,7 +249,7 @@ export class GitService {
 	 *   HEAD 1a2b3c4d...
 	 *   branch refs/heads/main
 	 * (a blank line separates entries; a detached-HEAD worktree has no `branch` line at all). */
-	async listWorktrees(): Promise<{ path: string; branch?: string; isCurrent: boolean }[]> {
+	async listWorktrees(): Promise<WorktreeInfo[]> {
 		const out = await this.git.raw(['worktree', 'list', '--porcelain']);
 		// git always reports the *real* (symlink-resolved) path here, e.g. macOS's /var -> /private/var
 		// — comparing against repoRoot with plain path.resolve looked right in isolation but silently
@@ -250,19 +257,14 @@ export class GitService {
 		// keeps the /var form. Verified by actually running `git worktree list --porcelain` from a repo
 		// under a tmp dir before trusting the plain-resolve comparison.
 		const realRepoRoot = safeRealpath(this.repoRoot);
-		const worktrees: { path: string; branch?: string; isCurrent: boolean }[] = [];
-		let currentPath: string | undefined;
-		let currentBranch: string | undefined;
+		const worktrees: WorktreeInfo[] = [];
+		let current: Omit<WorktreeInfo, 'isCurrent' | 'isMain'> | undefined;
 		const flush = () => {
-			if (currentPath) {
-				worktrees.push({
-					path: currentPath,
-					branch: currentBranch,
-					isCurrent: safeRealpath(currentPath) === realRepoRoot,
-				});
+			if (current) {
+				// git always lists the main worktree first.
+				worktrees.push({ ...current, isCurrent: safeRealpath(current.path) === realRepoRoot, isMain: worktrees.length === 0 });
 			}
-			currentPath = undefined;
-			currentBranch = undefined;
+			current = undefined;
 		};
 		for (const line of out.split('\n')) {
 			if (!line.trim()) {
@@ -270,13 +272,51 @@ export class GitService {
 				continue;
 			}
 			if (line.startsWith('worktree ')) {
-				currentPath = line.slice('worktree '.length).trim();
+				current = { path: line.slice('worktree '.length).trim() };
+			} else if (!current) {
+				continue;
 			} else if (line.startsWith('branch ')) {
-				currentBranch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+				current.branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+			} else if (line === 'locked' || line.startsWith('locked ')) {
+				current.locked = line.slice('locked'.length).trim();
 			}
 		}
 		flush();
 		return worktrees;
+	}
+
+	/** How many files have uncommitted changes in another worktree, untracked ones included -- what
+	 * removing that worktree would throw away. */
+	async countWorktreeChanges(worktreePath: string): Promise<number> {
+		// Its own instance, rooted there: simple-git refuses `-C <path>`.
+		const out = await createGit(worktreePath).raw(['status', '--porcelain']);
+		return out.split('\n').filter(Boolean).length;
+	}
+
+	/** Deletes a linked worktree's folder and git's record of it. Git refuses one with uncommitted
+	 * changes unless forced, and a locked one unless forced twice. */
+	async removeWorktree(worktreePath: string, options: { force?: boolean; locked?: boolean } = {}): Promise<void> {
+		assertNotOptionLike(worktreePath, 'worktree path');
+		const args = ['worktree', 'remove'];
+		if (options.force || options.locked) {
+			args.push('--force');
+		}
+		if (options.locked) {
+			args.push('--force');
+		}
+		args.push(worktreePath);
+		await this.git.raw(args);
+	}
+
+	/** Clears git's record of every worktree whose folder is gone -- `git worktree remove` can't, since
+	 * there's no folder left for it to check. A locked one has to be unlocked first. */
+	async pruneWorktrees(): Promise<void> {
+		await this.git.raw(['worktree', 'prune']);
+	}
+
+	async unlockWorktree(worktreePath: string): Promise<void> {
+		assertNotOptionLike(worktreePath, 'worktree path');
+		await this.git.raw(['worktree', 'unlock', worktreePath]);
 	}
 
 	/** Maps branch name -> the path of the *other* worktree it's checked out in. Excludes whichever
@@ -743,6 +783,13 @@ export class GitService {
 				return { sha, subject };
 			});
 		return { count: Number(countOut.trim()) || 0, commits };
+	}
+
+	/** The newest commit both `a` and `b` have, or undefined if they share no history. */
+	async getMergeBase(a: string, b: string): Promise<string | undefined> {
+		assertNotOptionLike(a, 'ref');
+		assertNotOptionLike(b, 'ref');
+		return (await this.git.raw(['merge-base', a, b])).trim() || undefined;
 	}
 
 	/** Which of `paths` differ between two commits. */
@@ -1443,7 +1490,7 @@ export class GitService {
 	 * replay: on HEAD, not yet on `onto`. In a stack (main <- alice/a <- alice/b, with alice/b checked
 	 * out), rebasing onto main finds alice/a. Nearest to `onto` first. `upstreamGone` marks one whose
 	 * remote branch was deleted -- often a sign it's been merged. */
-	async listBranchesBetween(onto: string): Promise<{ name: string; distance: number; upstreamGone: boolean }[]> {
+	async listBranchesBetween(onto: string): Promise<{ name: string; sha: string; distance: number; upstreamGone: boolean }[]> {
 		assertNotOptionLike(onto, 'branch name');
 		const [current, out] = await Promise.all([
 			this.getCurrentBranch(),
@@ -1451,7 +1498,7 @@ export class GitService {
 				'for-each-ref',
 				'--merged=HEAD',
 				`--no-merged=${onto}`,
-				`--format=%(refname:short)${FIELD_SEP}%(upstream:track)`,
+				`--format=%(refname:short)${FIELD_SEP}%(objectname)${FIELD_SEP}%(upstream:track)`,
 				'refs/heads/',
 			]),
 		]);
@@ -1461,13 +1508,49 @@ export class GitService {
 			.map(line => line.split(FIELD_SEP))
 			.filter(([name]) => name !== current);
 		const withDistance = await Promise.all(
-			branches.map(async ([name, track]) => ({
+			branches.map(async ([name, sha, track]) => ({
 				name,
+				sha,
 				distance: Number((await this.git.raw(['rev-list', '--count', `${onto}..refs/heads/${name}`, '--'])).trim()) || 0,
 				upstreamGone: track === '[gone]',
 			}))
 		);
 		return withDistance.sort((a, b) => a.distance - b.distance);
+	}
+
+	/** The commits `rebaseOnto(onto, { upstream })` would replay, newest first (the first `limit`),
+	 * and how many there are in all. The same selection git makes: commits on HEAD but not on `onto` --
+	 * nor on `upstream`, when given -- leaving out merge commits and any whose change `onto` already has
+	 * (--cherry-pick). A squash-merged commit isn't one of those: the squash is a new change, so the
+	 * original commits still show up here, which is what tells you to replay only those after it.
+	 * `behind` is how many commits `onto` has that HEAD doesn't: 0 with no `upstream` means HEAD
+	 * already sits on top of `onto`, and there's nothing to do. */
+	async previewRebase(
+		onto: string,
+		upstream: string | undefined,
+		limit: number,
+		/** What's being rebased -- another commit than HEAD only to ask what a cut point leaves out. */
+		tip = 'HEAD'
+	): Promise<{ count: number; behind: number; commits: { sha: string; shortSha: string; subject: string }[] }> {
+		assertNotOptionLike(onto, 'branch name');
+		assertNotOptionLike(tip, 'commit');
+		if (upstream !== undefined) {
+			assertNotOptionLike(upstream, 'branch or commit');
+		}
+		const range = ['--right-only', '--cherry-pick', '--no-merges', `${onto}...${tip}`, ...(upstream ? [`^${upstream}`] : [])];
+		const [countOut, logOut, behindOut] = await Promise.all([
+			this.git.raw(['rev-list', '--count', ...range, '--']),
+			this.git.raw(['log', `--max-count=${limit}`, `--format=%H${FIELD_SEP}%h${FIELD_SEP}%s`, ...range, '--']),
+			this.git.raw(['rev-list', '--count', `${tip}..${onto}`, '--']),
+		]);
+		const commits = logOut
+			.split('\n')
+			.filter(Boolean)
+			.map(line => {
+				const [sha, shortSha, subject] = line.split(FIELD_SEP);
+				return { sha, shortSha, subject };
+			});
+		return { count: Number(countOut.trim()) || 0, behind: Number(behindOut.trim()) || 0, commits };
 	}
 
 	private gitVersion?: Promise<number[]>;
@@ -1623,6 +1706,16 @@ export class GitService {
 		}
 		await this.git.pull(remote, current);
 	}
+}
+
+/** A simple-git instance for a repo or worktree folder, set up as described in GitService's constructor. */
+function createGit(baseDir: string): SimpleGit {
+	return simpleGit({
+		baseDir,
+		binary: ['git', '--no-optional-locks'],
+		unsafe: { allowUnsafeEditor: true },
+		allowEnvironment: Object.keys(process.env).filter(key => key.toLowerCase() !== 'git_editor'),
+	});
 }
 
 /** The git subcommand in a spawned command line, past any leading options -- e.g. "push" in

@@ -218,6 +218,9 @@ let bulkLoadingForSearch = false;
 let searchQuery = '';
 // The commit whose double-click details panel is open -- at most one at a time.
 let expandedSha: string | undefined;
+/** The last 'commits' message's branch, file filter, first page and unpushed hashes -- what a
+ * background reload is compared against to tell whether there's anything to re-render. */
+let lastCommitsKey: string | undefined;
 // Full messages already fetched via 'getCommitMessage', so re-opening a commit (or the list
 // re-rendering under an open one) doesn't need another round trip.
 const commitMessages = new Map<string, string>();
@@ -804,6 +807,20 @@ window.addEventListener('message', event => {
 	const message = event.data as HostMessage;
 	switch (message.type) {
 		case 'commits': {
+			renderRemoteSelect(message.remotes, message.selectedRemote);
+			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount, message.needsForcePush);
+			updateBranchActions(message.viewedRef, message.branchName, message.checkedOutBranch);
+			updateGitHubButton(message.githubUrl);
+			// Most background reloads bring the very same list: anything touching .git triggers one, and
+			// VS Code's own git extension rewrites .git/index every time it refreshes. Re-rendering then
+			// would wipe out a text selection in the open commit's details mid-copy (verified in a real
+			// VS Code), plus the search, the scroll position and any older pages loaded, so it's skipped.
+			const commitsKey = JSON.stringify([message.branchName, message.filePath, message.commits, message.unpushed]);
+			const unchanged = !message.focusLatest && commitsKey === lastCommitsKey;
+			lastCommitsKey = commitsKey;
+			if (unchanged) {
+				break;
+			}
 			hasMoreCommits = message.hasMore;
 			unpushedShas = new Set(message.unpushed);
 			loadingMoreCommits = false;
@@ -816,10 +833,6 @@ window.addEventListener('message', event => {
 			searchClearButton.hidden = true;
 			fileFilter = message.filePath;
 			renderFileFilter();
-			renderRemoteSelect(message.remotes, message.selectedRemote);
-			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount, message.needsForcePush);
-			updateBranchActions(message.viewedRef, message.branchName, message.checkedOutBranch);
-			updateGitHubButton(message.githubUrl);
 			commitsEl.scrollTop = 0;
 			// A background reload keeps an open commit open if it's still in the list; a branch
 			// switch (or an amend/reset that replaced it) closes it.

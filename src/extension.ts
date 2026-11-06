@@ -24,7 +24,7 @@ import {
 	pullLocalBranch,
 	pushBranchGroups,
 	pushLocalBranch,
-	rebaseCurrentBranchWithPicker,
+	removeWorktreeOfBranch,
 	renameLocalBranch,
 	setBranchUpstream,
 	stageHunkAtCursor,
@@ -37,6 +37,7 @@ import { GitService, splitRemoteBranch, unlessNotARepo } from './git/gitService'
 import { BranchInfo, RemoteBranchInfo, StashInfo, WorkingChangeFile } from './git/types';
 import { DependencyCheck } from './dependencyCheck';
 import { OperationRunner } from './operationRunner';
+import { RebasePanel } from './rebase/rebasePanel';
 import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
 import { BranchesDragAndDropController } from './tree/branchesDragAndDrop';
@@ -320,6 +321,17 @@ export function activate(context: vscode.ExtensionContext): void {
 			} else if (choice === 'Merge Options…') {
 				MergePanel.createOrShow(context, gitService, sourceBranch, intoBranch, analysis, onMerged);
 			}
+		} catch (err) {
+			vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+		}
+	};
+
+	const openRebaseTab = async (onto?: string) => {
+		try {
+			await RebasePanel.createOrShow(context, gitService, () => {
+				refreshAll();
+				BranchHistoryPanel.refreshIfOpen();
+			}, onto);
 		} catch (err) {
 			vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
 		}
@@ -717,9 +729,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand('ggit.showOutput', () => output.show(true)),
 
-		vscode.commands.registerCommand('ggit.rebase', () =>
-			runGitOperation('Rebasing…', () => rebaseCurrentBranchWithPicker(gitService), refreshAll)
-		),
+		// The Rebase tab (see RebasePanel). From a branch's right-click menu, in Branches or Remotes, that
+		// branch starts out picked as what to rebase onto.
+		vscode.commands.registerCommand('ggit.rebase', () => openRebaseTab()),
+		vscode.commands.registerCommand('ggit.rebaseOntoBranch', (node?: BranchTreeNode<BranchInfo | RemoteBranchInfo>) => {
+			if (node?.kind === 'leaf') {
+				return openRebaseTab(node.item.name);
+			}
+		}),
+
+		// Offered on a branch checked out in another worktree, where Delete is greyed out -- git won't
+		// delete a branch a worktree has checked out (see removeWorktreeOfBranch).
+		vscode.commands.registerCommand('ggit.removeWorktree', (node?: BranchTreeNode<BranchInfo>) => {
+			if (node?.kind !== 'leaf') {
+				return;
+			}
+			return runGitOperation(`Removing the worktree of ${node.item.name}…`, () => removeWorktreeOfBranch(gitService, node.item.name), refreshAll);
+		}),
 
 		vscode.commands.registerCommand('ggit.rebaseContinue', () =>
 			runGitOperation('Continuing rebase…', () => gitService.rebaseContinue(), refreshAll)

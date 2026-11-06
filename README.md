@@ -54,8 +54,12 @@ the panel and reloading the window.
 - Green = checked out here. Blue = checked out in another `git worktree`.
 - **Merge:** drag a branch onto the current one. Fast-forward, merge commit, `--no-ff`, squash, or
   `--no-commit`.
-- Right-click: Create Branch / Create Tag from Here, Rename, Copy Name, Set Upstream Branch, Delete.
-- Toolbar: Create Branch, Fetch, Pull, Push, Sync, Rebase (`--autostash`). The `...` menu has
+- Right-click: Create Branch / Create Tag from Here, Rebase Current Branch onto This, Rename, Copy
+  Name, Set Upstream Branch, Delete. A branch checked out in another worktree can't be deleted, so
+  it offers **Remove Worktree…** instead: it deletes that worktree's folder (warning first if it has
+  uncommitted changes), optionally deletes the branch too, and handles locked worktrees and ones
+  whose folder is already gone.
+- Toolbar: Create Branch, Fetch, Pull, Push, Sync, Rebase. The `...` menu has
   **Push Branches…**: pick several published branches and push them in one `git push` per remote,
   so the pre-push hook runs once.
 - Pull and Sync check the upstream first. A feature branch tracking `origin/main` (what
@@ -66,15 +70,17 @@ the panel and reloading the window.
   lists the remote commits that would be overwritten. The push only goes through if the remote is
   still at that commit (`--force-with-lease=<ref>:<sha>`), so a fetch in the background can't turn
   the lease into a blind overwrite.
-- **Stacked branches:** when other branches sit under the one being rebased (main ← `alice/a` ←
-  `alice/b`), Rebase asks what to do with them. **Rebase the stack** moves them along
-  (`--update-refs`, git 2.38+). **"alice/a" is already merged** replays only the commits after it
-  (`--onto`), for when `alice/a` was squash-merged. Afterwards it offers to push the moved branches
-  together.
+- **Rebase tab:** pick what to rebase onto (a local or remote branch), and which commits to replay:
+  every commit not on it, or **only the commits after** a branch or commit (`--onto`), for a branch
+  whose parent was squash-merged. Type the cut point or pick one of the branches underneath. A live
+  preview lists the commits that will be replayed and, with a cut point, the ones left out. When a
+  branch underneath has no remote branch any more (likely merged), it suggests cutting after it. Branches stacked under the current one can move along
+  (`--update-refs`, git 2.38+), and afterwards it offers to push them all together. Uncommitted
+  changes are autostashed.
 
 **Remotes**: browse and check out remote branches, live search, Add Remote, Edit Remote and
 Remove Remote (right-click a remote; Edit shows and changes its name, URL, and push URL), Delete
-Remote Branch.
+Remote Branch, Rebase Current Branch onto This.
 **Sync** fetches every remote: downloads new branches and removes ones deleted on the remote.
 
 **Tags**: green = on a remote, purple = local only, orange = differs from the remote, cloud icon =
@@ -124,7 +130,7 @@ or the terminal) and brings a different `pnpm-lock.yaml`, `package-lock.json`, `
 
 ## Not implemented yet
 
-- Creating or switching to a `git worktree`. Branches shows worktrees but can't manage them.
+- Creating or switching to a `git worktree`. Branches shows worktrees and can remove one, nothing more.
 - Interactive rebase (reorder, squash, reword, drop).
 - Discard Hunk.
 - Credential/SSH management. GGit uses whatever already works from your terminal.
