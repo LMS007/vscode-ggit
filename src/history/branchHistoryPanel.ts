@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { openDiffForFile } from '../diff/openDiff';
-import { applyCommitToCurrentBranch, resetHeadToCommit } from '../git/gitActions';
+import { applyCommitToCurrentBranch, needsForcePush, resetHeadToCommit } from '../git/gitActions';
 import { GitService } from '../git/gitService';
 import { CommitInfo } from '../git/types';
 import { HostMessage, ViewedRef, WebviewMessage } from './protocol';
@@ -184,7 +184,7 @@ export class BranchHistoryPanel {
 			return;
 		}
 		try {
-			const [{ commits, hasMore }, aheadCount, upstream, remotes, githubUrl, unpushed, checkedOutBranch, isLocalBranch] =
+			const [{ commits, hasMore }, aheadCount, upstream, remotes, githubUrl, unpushed, checkedOutBranch, isLocalBranch, forcePush] =
 				await Promise.all([
 					this.fetchLogPage(0),
 					this.gitService.getAheadCount(this.branchName),
@@ -194,6 +194,7 @@ export class BranchHistoryPanel {
 					this.gitService.getUnpushedCommits(this.branchName, UNPUSHED_COMMITS_LIMIT),
 					this.gitService.getCurrentBranch(),
 					this.gitService.localBranchExists(this.branchName),
+					needsForcePush(this.gitService, this.branchName),
 				]);
 			this.commitsLoaded = commits.length;
 			this.hasMoreCommits = hasMore;
@@ -225,6 +226,7 @@ export class BranchHistoryPanel {
 				focusLatest,
 				hasMore,
 				aheadCount,
+				needsForcePush: forcePush,
 				hasUpstream: upstream !== undefined,
 				remotes,
 				selectedRemote: effectiveRemote,
@@ -656,6 +658,18 @@ export class BranchHistoryPanel {
 			 * explicitly compete for it -- which is what made the green look like it was fading to grey
 			 * on hover despite this block already overriding border-color correctly. */
 			background-color: #1f883d;
+			border-color: rgba(255, 255, 255, 0.6);
+		}
+		/* Applied to the Push button instead when the branch has diverged from its remote branch (after a
+		 * rebase, typically) -- the button reads "Force Push…", and orange says it overwrites something. */
+		.toolbar-btn-warning {
+			border: 1px solid transparent;
+			background-color: #bc4c00;
+			color: #ffffff;
+		}
+		.toolbar-btn-warning:hover {
+			/* Same reasoning as .toolbar-btn-success:hover above. */
+			background-color: #bc4c00;
 			border-color: rgba(255, 255, 255, 0.6);
 		}
 		/* Applied to the Push button instead when the branch has never been pushed (no upstream) but

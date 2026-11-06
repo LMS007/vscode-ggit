@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "publisher": "kylekeating",
   "repository": {
     "type": "git",
@@ -120,6 +120,15 @@
         "command": "ggit.sync",
         "title": "GGit: Sync",
         "icon": "$(sync)"
+      },
+      {
+        "command": "ggit.pushBranches",
+        "title": "GGit: Push Branches…",
+        "icon": "$(repo-push)"
+      },
+      {
+        "command": "ggit.showOutput",
+        "title": "GGit: Show Output"
       },
       {
         "command": "ggit.rebase",
@@ -441,6 +450,11 @@
           "group": "navigation@6"
         },
         {
+          "command": "ggit.pushBranches",
+          "when": "view == ggitBranches",
+          "group": "1_push@1"
+        },
+        {
           "command": "ggit.searchRemotes",
           "when": "view == ggitRemotes",
           "group": "navigation@0"
@@ -713,6 +727,11 @@
           ],
           "default": "tree",
           "description": "How the Working Copy view lays out changed files."
+        },
+        "ggit.suggestInstallOnLockfileChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "When the checked-out commit changes (checkout, pull, rebase or merge, from GGit or the terminal) and brings a different lockfile at the repo root (pnpm-lock.yaml, package-lock.json, yarn.lock, bun.lock), offer to run the install in a terminal. Skipped when node_modules is already newer than the lockfile."
         }
       }
     }

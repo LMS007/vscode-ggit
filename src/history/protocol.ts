@@ -20,6 +20,10 @@ export type HostMessage =
 			/** How many commits are ready to push -- 0 means nothing to push. Drives the toolbar's
 			 * Push button turning green. */
 			aheadCount: number;
+			/** The branch and its remote branch have diverged (see gitActions.needsForcePush), so Push
+			 * can only be a force push -- the button says "Force Push…" and goes straight to its
+			 * confirmation. */
+			needsForcePush: boolean;
 			/** Whether the branch has an upstream configured at all -- false means it's never been
 			 * pushed, which is when the Push button becomes "Publish" instead. */
 			hasUpstream: boolean;

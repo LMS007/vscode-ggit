@@ -3,7 +3,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { GGIT_SHOW_SCHEME, INDEX_REF } from '../diff/showContentProvider';
 import { saveOpenDocumentIfDirty } from '../documentUtils';
-import { GitService, parseStashSubject, splitRemoteBranch } from './gitService';
+import { isNonFastForwardRejection, isStaleLeaseRejection, joinWithAnd, parsePorcelainPush } from './gitErrors';
+import { BranchPush, GitService, parseStashSubject, PushOptions, splitRemoteBranch } from './gitService';
 import { PickOperation, WorkingChangeFile } from './types';
 
 /** Picks a remote with no prompt at all: `preferredRemote` if given (the History tab's own remote
@@ -133,7 +134,7 @@ async function pullOrFastForward(gitService: GitService, branch: string, target:
 	try {
 		await gitService.fastForwardBranch(branch, target);
 	} catch (err) {
-		if (isNonFastForwardRejection(err as Error)) {
+		if (isNonFastForwardRejection((err as Error).message)) {
 			throw new Error(
 				`"${branch}" and ${target} have diverged. A branch that isn't checked out can only be fast-forwarded -- check out "${branch}" to pull them together.`
 			);
@@ -191,34 +192,110 @@ async function pickRemote(gitService: GitService, branchName: string): Promise<s
 	});
 }
 
-/** Git's own message for a push rejected because the remote has commits the local branch doesn't --
- * distinct from other push failures (auth, network, ...), which should still just surface as a
- * normal error rather than offering to force. */
-function isNonFastForwardRejection(err: Error): boolean {
-	return /\[rejected\]/.test(err.message) && /non-fast-forward|fetch first/i.test(err.message);
+/** Whether `branch` and its same-named branch on `remote` have each got commits the other doesn't,
+ * as of the last fetch -- when a plain push is bound to be rejected. */
+async function hasDivergedFrom(gitService: GitService, branch: string, remote: string): Promise<boolean> {
+	const remoteSha = await gitService.resolveCommit(`refs/remotes/${remote}/${branch}`);
+	if (!remoteSha) {
+		return false;
+	}
+	const [ahead, behind] = await Promise.all([
+		gitService.getCommitsNotIn(`refs/heads/${branch}`, remoteSha, 0),
+		gitService.getCommitsNotIn(remoteSha, `refs/heads/${branch}`, 0),
+	]);
+	return ahead.count > 0 && behind.count > 0;
 }
 
-/** Tries a normal push first; only on a non-fast-forward rejection does this escalate to a second,
- * explicit force-push confirmation -- same "try safe first, confirm before escalating" pattern as
- * deleteLocalBranch's force-delete path below. Keeps the common case (a push that just succeeds)
- * free of any extra dialog. */
-async function pushWithForceEscalation(gitService: GitService, branchName: string, remote: string): Promise<void> {
+/** Whether the History tab's Push button should say "Force Push…": the branch tracks its own
+ * same-named remote branch, and the two have diverged (see hasDivergedFrom), typically after a rebase.
+ * A differently named upstream is left out -- Push goes to the same-named branch, not to it. */
+export async function needsForcePush(gitService: GitService, branch: string): Promise<boolean> {
+	const upstream = await gitService.getUpstreamBranch(branch);
+	if (!upstream || splitRemoteBranch(upstream).branch !== branch) {
+		return false;
+	}
+	const { ahead, behind } = await gitService.getAheadBehind(branch);
+	return ahead > 0 && behind > 0;
+}
+
+/** A plain push when that can work; a confirmed force push when it can't. A branch that's diverged
+ * from the remote as of the last fetch -- after a rebase, say -- goes straight to the force-push
+ * confirmation rather than first trying a push that's bound to be rejected (and running the pre-push
+ * hook for it). Otherwise it tries a normal push, and only a non-fast-forward rejection (the remote
+ * got commits since the last fetch) leads to the confirmation -- same "try safe first, confirm before
+ * escalating" pattern as deleteLocalBranch's force-delete path below. */
+async function pushWithForceEscalation(gitService: GitService, branchName: string, remote: string, options: PushOptions): Promise<void> {
+	if (await hasDivergedFrom(gitService, branchName, remote)) {
+		await confirmAndForcePush(gitService, branchName, remote, options);
+		return;
+	}
 	try {
-		await gitService.pushBranch(branchName, remote);
+		await gitService.pushBranch(branchName, remote, options);
 	} catch (err) {
-		if (!isNonFastForwardRejection(err as Error)) {
+		if (!isNonFastForwardRejection((err as Error).message)) {
 			throw err;
 		}
-		const forceConfirmed = await vscode.window.showWarningMessage(
-			`Push rejected: the remote has commits "${branchName}" doesn't have. Force push anyway? This can overwrite them.`,
-			{ modal: true },
-			'Force Push'
-		);
-		if (forceConfirmed !== 'Force Push') {
-			return;
-		}
-		await gitService.pushBranch(branchName, remote, { force: true });
+		await confirmAndForcePush(gitService, branchName, remote, options);
 	}
+}
+
+/** Up to this many of the commits a force push would drop are named in its confirmation. */
+const LISTED_COMMITS = 5;
+
+/** Fetches what the remote has for `branch` right now and shows the commits a force push would drop.
+ * If the user goes ahead, the push is pinned to the commit shown (see GitService.pushBranches), so
+ * anything pushed in the meantime makes it fail rather than get overwritten unseen. When nothing would
+ * be dropped after all -- a fast-forward once fetched -- it's a plain push, with no dialog. */
+async function confirmAndForcePush(gitService: GitService, branch: string, remote: string, options: PushOptions): Promise<void> {
+	const remoteBranch = `${remote}/${branch}`;
+	let fetchNote = '';
+	try {
+		await gitService.fetchBranches(remote, [branch]);
+	} catch (err) {
+		gitService.log(`confirmAndForcePush: couldn't fetch ${remoteBranch}: ${(err as Error).message.trim()}`);
+		fetchNote = ` GGit couldn't reach ${remote} just now, so this is what it had as of the last fetch.`;
+	}
+	const remoteSha = await gitService.resolveCommit(`refs/remotes/${remoteBranch}`);
+	const dropped = remoteSha ? await gitService.getCommitsNotIn(remoteSha, `refs/heads/${branch}`, LISTED_COMMITS) : undefined;
+	if (!remoteSha || !dropped || dropped.count === 0) {
+		await gitService.pushBranch(branch, remote, options);
+		return;
+	}
+	const confirmed = await vscode.window.showWarningMessage(
+		`Force push "${branch}" to ${remote}?`,
+		{
+			modal: true,
+			detail:
+				`${remoteBranch} has ${describeCommitCount(dropped.count)} that "${branch}" doesn't. A force push removes ${dropped.count === 1 ? 'it' : 'them'} from ${remote}:\n\n` +
+				listCommits(dropped) +
+				`\n\nIt only goes through if ${remoteBranch} is still at ${remoteSha.slice(0, 7)}: if anyone pushes to it first, git refuses instead of overwriting their work.${fetchNote}`,
+		},
+		'Force Push'
+	);
+	if (confirmed !== 'Force Push') {
+		return;
+	}
+	try {
+		await gitService.pushBranch(branch, remote, { ...options, lease: remoteSha });
+	} catch (err) {
+		if (isStaleLeaseRejection((err as Error).message)) {
+			throw new Error(`${remoteBranch} changed after GGit checked it, so nothing was overwritten. Push again to see what it has now.`);
+		}
+		throw err;
+	}
+}
+
+function describeCommitCount(count: number): string {
+	return `${count} commit${count === 1 ? '' : 's'}`;
+}
+
+/** "abc1234 Fix the thing" per line, then "…and 3 more" past what was listed. */
+function listCommits({ count, commits }: { count: number; commits: { sha: string; subject: string }[] }): string {
+	const lines = commits.map(c => `${c.sha} ${c.subject}`);
+	if (count > commits.length) {
+		lines.push(`…and ${count - commits.length} more`);
+	}
+	return lines.join('\n');
 }
 
 /** If the branch is already published, pushes it to its actual tracked remote (not necessarily
@@ -226,13 +303,18 @@ async function pushWithForceEscalation(gitService: GitService, branchName: strin
  * given (the History tab's own remote dropdown already resolved that choice, so there's no need to ask
  * again), or falls back to `pickRemote`'s picker -- used when this is invoked from somewhere with no
  * such dropdown, e.g. the Branches view's Push button. Neither needs the branch checked out. */
-export async function pushLocalBranch(gitService: GitService, branchName?: string, preferredRemote?: string): Promise<void> {
+export async function pushLocalBranch(
+	gitService: GitService,
+	branchName?: string,
+	preferredRemote?: string,
+	options: PushOptions = {}
+): Promise<void> {
 	const branch = branchName ?? (await gitService.getCurrentBranch());
 	requireCurrentBranch(branch);
 
 	const upstream = await gitService.getUpstreamBranch(branch);
 	if (upstream) {
-		await pushWithForceEscalation(gitService, branch, splitRemoteBranch(upstream).remote);
+		await pushWithForceEscalation(gitService, branch, splitRemoteBranch(upstream).remote, options);
 		return;
 	}
 
@@ -248,13 +330,18 @@ export async function pushLocalBranch(gitService: GitService, branchName?: strin
 		ignoreFocusOut: true,
 	});
 	if (remoteName) {
-		await gitService.publishBranch(branch, remoteName.trim(), remote);
+		await gitService.publishBranch(branch, remoteName.trim(), remote, options);
 	}
 }
 
 /** Pulls from the target remote branch (only a fast-forward, for a branch that isn't checked out --
  * see pullOrFastForward), then pushes back — publishing first if the branch isn't tracked yet. */
-export async function syncLocalBranch(gitService: GitService, branchName?: string, preferredRemote?: string): Promise<void> {
+export async function syncLocalBranch(
+	gitService: GitService,
+	branchName?: string,
+	preferredRemote?: string,
+	options: PushOptions = {}
+): Promise<void> {
 	const branch = branchName ?? (await gitService.getCurrentBranch());
 	requireCurrentBranch(branch);
 
@@ -272,10 +359,150 @@ export async function syncLocalBranch(gitService: GitService, branchName?: strin
 
 	const upstream = await gitService.getUpstreamBranch(branch);
 	if (upstream) {
-		await pushWithForceEscalation(gitService, branch, splitRemoteBranch(upstream).remote);
+		await pushWithForceEscalation(gitService, branch, splitRemoteBranch(upstream).remote, options);
 	} else {
 		const { remote, branch: remoteBranch } = splitRemoteBranch(target);
-		await gitService.publishBranch(branch, remoteBranch, remote);
+		await gitService.publishBranch(branch, remoteBranch, remote, options);
+	}
+}
+
+/** A branch Push Branches can offer: published to its same-named remote branch. */
+interface PushableBranch {
+	name: string;
+	remote: string;
+	ahead: number;
+	behind: number;
+}
+
+/** Local branches that track a same-named branch on some remote -- what Push Branches pushes to (see
+ * GitService.pushBranches), with ahead/behind against it as of the last fetch. */
+async function listPushableBranches(gitService: GitService): Promise<PushableBranch[]> {
+	return (await gitService.listTrackedBranches())
+		.filter(b => b.upstreamBranch === b.name)
+		.map(({ name, remote, ahead, behind }) => ({ name, remote, ahead, behind }));
+}
+
+/** A confirmed Push Branches selection, ready to run (see pushBranchGroups). */
+export interface BranchPushGroup {
+	remote: string;
+	branches: BranchPush[];
+}
+
+/** Picks which branches Push Branches pushes, and confirms any force push among them. `preselected`
+ * (a rebased stack, say) starts checked; otherwise every branch with something to push does. Fetches
+ * each picked branch first and works from that, so the confirmation lists what's on the remote now,
+ * and each force push is pinned to the commit shown (see confirmAndForcePush). Undefined when there's
+ * nothing to do or the user backs out. */
+export async function pickBranchPushes(gitService: GitService, preselected?: string[]): Promise<BranchPushGroup[] | undefined> {
+	const candidates = await listPushableBranches(gitService);
+	if (candidates.length === 0) {
+		void vscode.window.showInformationMessage(
+			'GGit: No published branches to push. Push publishes a branch on its own; Push Branches is for ones already on a remote.'
+		);
+		return undefined;
+	}
+	type BranchPick = vscode.QuickPickItem & { branch: PushableBranch };
+	const items: BranchPick[] = candidates.map(branch => ({
+		label: branch.name,
+		description: [
+			branch.ahead ? `↑${branch.ahead}` : '',
+			branch.behind ? `↓${branch.behind}` : '',
+			branch.ahead && branch.behind ? 'diverged: force push' : '',
+			!branch.ahead && !branch.behind ? 'up to date' : '',
+			`→ ${branch.remote}`,
+		]
+			.filter(Boolean)
+			.join('  '),
+		picked: preselected ? preselected.includes(branch.name) : branch.ahead > 0,
+		branch,
+	}));
+	const picked = await vscode.window.showQuickPick(items, {
+		title: 'Push Branches',
+		placeHolder: 'Branches to push together: one git push per remote, so the pre-push hook runs once',
+		canPickMany: true,
+		ignoreFocusOut: true,
+	});
+	if (!picked || picked.length === 0) {
+		return undefined;
+	}
+
+	const byRemote = new Map<string, string[]>();
+	for (const { branch } of picked) {
+		byRemote.set(branch.remote, [...(byRemote.get(branch.remote) ?? []), branch.name]);
+	}
+	const groups: BranchPushGroup[] = [];
+	const forced: string[] = [];
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: `Checking ${[...byRemote.keys()].join(', ')}…` },
+		async () => {
+			for (const [remote, names] of byRemote) {
+				try {
+					await gitService.fetchBranches(remote, names);
+				} catch (err) {
+					gitService.log(`pickBranchPushes: couldn't fetch from ${remote}: ${(err as Error).message.trim()}`);
+				}
+				const branches: BranchPush[] = [];
+				for (const name of names) {
+					const remoteSha = await gitService.resolveCommit(`refs/remotes/${remote}/${name}`);
+					const dropped = remoteSha ? await gitService.getCommitsNotIn(remoteSha, `refs/heads/${name}`, LISTED_COMMITS) : undefined;
+					if (remoteSha && dropped && dropped.count > 0) {
+						branches.push({ branch: name, lease: remoteSha });
+						forced.push(`${name} (replaces ${describeCommitCount(dropped.count)} on ${remote}):\n${listCommits(dropped)}`);
+					} else {
+						branches.push({ branch: name });
+					}
+				}
+				groups.push({ remote, branches });
+			}
+		}
+	);
+	if (forced.length > 0) {
+		const total = picked.length;
+		const label = `Push ${total} Branch${total === 1 ? '' : 'es'}`;
+		const confirmed = await vscode.window.showWarningMessage(
+			`Force push ${forced.length === total ? (total === 1 ? 'it' : `all ${total}`) : `${forced.length} of the ${total}`}?`,
+			{
+				modal: true,
+				detail:
+					`These have commits on the remote that the local branch doesn't, and a force push removes them:\n\n${forced.join('\n\n')}\n\n` +
+					"Each one only goes through if its remote branch hasn't moved since GGit checked it just now.",
+			},
+			label
+		);
+		if (confirmed !== label) {
+			return undefined;
+		}
+	}
+	return groups;
+}
+
+/** Runs what pickBranchPushes set up: one `git push` per remote. Git doesn't make a push
+ * all-or-nothing, so when some branches are turned down the error says which went through. */
+export async function pushBranchGroups(gitService: GitService, groups: BranchPushGroup[], options: PushOptions = {}): Promise<void> {
+	const failures: string[] = [];
+	const pushed: string[] = [];
+	for (const { remote, branches } of groups) {
+		try {
+			const out = await gitService.pushBranches(remote, branches, { ...options, porcelain: true });
+			pushed.push(...parsePorcelainPush(out).map(r => r.branch));
+		} catch (err) {
+			const message = (err as Error).message;
+			const refs = parsePorcelainPush(message);
+			if (refs.length === 0) {
+				// Nothing went out at all -- a hook, or the remote couldn't be reached. Thrown as-is, so the
+				// operation's own error handling (including a hook failure's) sees git's whole output.
+				throw err;
+			}
+			pushed.push(...refs.filter(r => r.ok).map(r => r.branch));
+			failures.push(
+				...refs
+					.filter(r => !r.ok)
+					.map(r => `${r.branch} (${/stale info/.test(r.summary) ? `${remote}'s copy changed after GGit checked it` : r.summary})`)
+			);
+		}
+	}
+	if (failures.length > 0) {
+		throw new Error(`${pushed.length > 0 ? `Pushed ${joinWithAnd(pushed)}, but not ` : 'Not pushed: '}${joinWithAnd(failures)}.`);
 	}
 }
 
@@ -566,20 +793,17 @@ export async function confirmStagingConflicts(gitService: GitService, conflicted
 	return (await vscode.window.showWarningMessage(message, { modal: true }, confirmLabel)) === confirmLabel;
 }
 
-function joinWithAnd(parts: string[]): string {
-	if (parts.length <= 1) {
-		return parts.join('');
-	}
-	return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
-}
-
 /** Whichever branch is currently checked out gets rebased; the branch picked here is what it's rebased
  * onto. Only local branches are offered — mirrors Create Branch's Starting Point picker — since
  * rebasing onto a remote branch you haven't fetched yet would just replay onto stale history anyway
  * (run Fetch/Pull first for that). `--autostash` is always on (see GitService.rebaseOnto), so there's
  * no "you have local changes" failure mode to expose a checkbox for, and interactive rebase
  * (reordering/squashing/rewording commits) is a big enough feature on its own that it's deliberately
- * left out of this first pass — this only ever does a plain, non-interactive rebase. */
+ * left out of this first pass — this only ever does a non-interactive rebase.
+ *
+ * When other branches are stacked under the checked-out one, a second pick says what happens to them
+ * (see pickRebasePlan). Once a rebase that moved some of them finishes, this offers to push them all
+ * together. */
 export async function rebaseCurrentBranchWithPicker(gitService: GitService): Promise<void> {
 	const current = await gitService.getCurrentBranch();
 	requireCurrentBranch(current);
@@ -592,7 +816,102 @@ export async function rebaseCurrentBranchWithPicker(gitService: GitService): Pro
 	if (!picked) {
 		return;
 	}
-	await gitService.rebaseOnto(picked);
+	const plan = await pickRebasePlan(gitService, current, picked);
+	if (!plan) {
+		return;
+	}
+	await gitService.rebaseOnto(plan.onto, { upstream: plan.upstream, updateRefs: plan.updateRefs });
+	if (plan.moved.length > 0 && !(await gitService.isRebaseInProgress())) {
+		offerToPushBranches(gitService, current, plan.moved);
+	}
+}
+
+interface RebasePlan {
+	onto: string;
+	/** Replay only the commits after this branch (`rebase --onto <onto> <upstream>`). */
+	upstream?: string;
+	updateRefs: boolean;
+	/** The other branches the rebase moves along with the checked-out one. */
+	moved: string[];
+}
+
+/** With no other branch under `current` (see GitService.listBranchesBetween), a plain rebase. With
+ * some -- a stack like main <- alice/a <- alice/b, rebasing alice/b onto main -- asks what to do with
+ * them:
+ *  - Rebase the stack: `--update-refs`, so alice/a moves along with alice/b.
+ *  - "alice/a is already merged": `--onto main alice/a`, replaying only alice/b's own commits. What a
+ *    stack needs once its parent is squash-merged: the parent's original commits never reach main
+ *    (the squash is a new commit), so a plain rebase would replay them onto their own squashed copy.
+ *    Branches between alice/a and alice/b still move along.
+ *  - Rebase only alice/b: the plain rebase, leaving alice/a where it is.
+ * Without git 2.38's --update-refs, the stack option is left out, and the others don't move anything
+ * else. Undefined when the user backs out. */
+async function pickRebasePlan(gitService: GitService, current: string, onto: string): Promise<RebasePlan | undefined> {
+	const between = await gitService.listBranchesBetween(onto);
+	if (between.length === 0) {
+		return { onto, updateRefs: false, moved: [] };
+	}
+	const updateRefs = await gitService.supportsUpdateRefs();
+	const names = between.map(b => b.name);
+	const listed = joinWithAnd(names.map(n => `"${n}"`));
+	type PlanPick = vscode.QuickPickItem & { plan: RebasePlan };
+	const items: PlanPick[] = [];
+	if (updateRefs) {
+		items.push({
+			label: '$(layers) Rebase the stack',
+			description: `moves ${listed} too`,
+			detail: `For branches stacked on each other: all of them move onto "${onto}" along with "${current}".`,
+			plan: { onto, updateRefs: true, moved: names },
+		});
+	}
+	for (const branch of between) {
+		items.push({
+			label: `$(git-merge) "${branch.name}" is already merged into "${onto}"`,
+			description: branch.upstreamGone ? 'its remote branch is gone' : undefined,
+			detail: `Replays only the commits after "${branch.name}" (rebase --onto). Use this when "${branch.name}" was squash-merged.`,
+			plan: { onto, upstream: branch.name, updateRefs, moved: [] },
+		});
+	}
+	items.push({
+		label: `$(arrow-right) Rebase only "${current}"`,
+		description: `${listed} stay${names.length === 1 ? 's' : ''} where ${names.length === 1 ? 'it is' : 'they are'}`,
+		plan: { onto, updateRefs: false, moved: [] },
+	});
+	const pick = await vscode.window.showQuickPick(items, {
+		title: `Rebase "${current}" onto "${onto}"`,
+		placeHolder: `${listed} ${names.length === 1 ? 'is' : 'are'} under "${current}" too. What should happen to ${names.length === 1 ? 'it' : 'them'}?`,
+		ignoreFocusOut: true,
+	});
+	if (!pick) {
+		return undefined;
+	}
+	const { plan } = pick;
+	if (plan.upstream && plan.updateRefs) {
+		plan.moved = (await gitService.listBranchesBetween(plan.upstream)).map(b => b.name);
+	}
+	return plan;
+}
+
+/** After a rebase that moved other branches along with `current`, offers to push the published ones
+ * together (see ggit.pushBranches). Doesn't wait for an answer, so the rebase's own progress closes. */
+function offerToPushBranches(gitService: GitService, current: string, moved: string[]): void {
+	void (async () => {
+		const branches = [current, ...moved];
+		const published = (await Promise.all(branches.map(async b => ((await gitService.getUpstreamBranch(b)) ? b : undefined)))).filter(
+			(b): b is string => b !== undefined
+		);
+		if (published.length === 0) {
+			return;
+		}
+		const label = `Push ${published.length === 1 ? published[0] : `${published.length} Branches`}…`;
+		const choice = await vscode.window.showInformationMessage(
+			`GGit: Rebased "${current}" and moved ${joinWithAnd(moved.map(m => `"${m}"`))} with it.`,
+			label
+		);
+		if (choice === label) {
+			void vscode.commands.executeCommand('ggit.pushBranches', published);
+		}
+	})().catch(err => gitService.log(`offerToPushBranches: ${(err as Error).message}`));
 }
 
 export async function applyStashWithPicker(gitService: GitService): Promise<void> {

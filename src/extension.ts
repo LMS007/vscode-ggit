@@ -20,7 +20,9 @@ import {
 	deleteLocalBranch,
 	discardWorkingChanges,
 	fetchLocalBranch,
+	pickBranchPushes,
 	pullLocalBranch,
+	pushBranchGroups,
 	pushLocalBranch,
 	rebaseCurrentBranchWithPicker,
 	renameLocalBranch,
@@ -33,6 +35,8 @@ import {
 } from './git/gitActions';
 import { GitService, splitRemoteBranch, unlessNotARepo } from './git/gitService';
 import { BranchInfo, RemoteBranchInfo, StashInfo, WorkingChangeFile } from './git/types';
+import { DependencyCheck } from './dependencyCheck';
+import { OperationRunner } from './operationRunner';
 import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
 import { BranchesDragAndDropController } from './tree/branchesDragAndDrop';
@@ -70,6 +74,19 @@ export function activate(context: vscode.ExtensionContext): void {
 	output.appendLine(`GGit: activated at ${new Date().toISOString()}, repoRoot=${workspaceFolder.uri.fsPath}`);
 
 	const gitService = new GitService(workspaceFolder.uri.fsPath, message => output.appendLine(message));
+
+	// Every git action that's more than a click away from done: behind a progress notification, logged
+	// to the output channel, and on failure, a short error (see OperationRunner). The History tab
+	// reloads after each one that succeeds.
+	const runner = new OperationRunner(gitService, output, () => BranchHistoryPanel.refreshIfOpen());
+	const runGitOperation = runner.run.bind(runner);
+	const dependencyCheck = new DependencyCheck(gitService);
+	const checkDependencies = () =>
+		void dependencyCheck.check().catch(err => {
+			if (!/not a git repository/.test((err as Error).message)) {
+				output.appendLine(`dependencyCheck: ${(err as Error).message}`);
+			}
+		});
 
 	const recentBranches = new RecentBranches(context.workspaceState);
 	const branchesProvider = new BranchesTreeProvider(gitService, context.extensionUri, recentBranches);
@@ -229,6 +246,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		void updateRepoContext();
 		void updateConflictContext();
 		void updateActiveBranchLabel();
+		checkDependencies();
 		CommitPanel.refreshIfOpen();
 		void commitLauncherProvider.refresh();
 		ConflictsPanel.refreshIfOpen();
@@ -363,6 +381,8 @@ export function activate(context: vscode.ExtensionContext): void {
 	void updateRepoContext();
 	void updateConflictContext();
 	void updateActiveBranchLabel();
+	// Records where HEAD starts, so the first move after activation has something to compare against.
+	checkDependencies();
 
 	context.subscriptions.push(
 		workingCopyView,
@@ -650,17 +670,52 @@ export function activate(context: vscode.ExtensionContext): void {
 			)
 		),
 
+		// Push and Sync run the pre-push hook, so its output shows while they run, and a failure of it
+		// offers Retry and a push without hooks (see OperationRunner).
 		vscode.commands.registerCommand('ggit.push', (remote?: string, branchName?: string) =>
-			runGitOperation(branchName ? `Pushing ${branchName}…` : 'Pushing…', () => pushLocalBranch(gitService, branchName, remote), refreshAll)
+			runGitOperation(
+				branchName ? `Pushing ${branchName}…` : 'Pushing…',
+				ctx => pushLocalBranch(gitService, branchName, remote, ctx),
+				refreshAll,
+				{ hook: 'pre-push', action: 'Push' }
+			)
 		),
 
 		vscode.commands.registerCommand('ggit.sync', (remote?: string, branchName?: string) =>
 			runGitOperation(
 				branchName ? `Syncing ${branchName}…` : 'Syncing…',
-				() => syncLocalBranch(gitService, branchName, remote),
-				refreshAllAndRemoteTags
+				ctx => syncLocalBranch(gitService, branchName, remote, ctx),
+				refreshAllAndRemoteTags,
+				{ hook: 'pre-push', action: 'Push' }
 			)
 		),
+
+		// Several published branches in one git push per remote -- a rebased stack, say, which needs a
+		// force push for each and is best checked by the pre-push hook once. `branches` preselects them,
+		// from the offer a stack rebase makes when it's done (see offerToPushBranches in gitActions.ts).
+		// The picking and confirming happen first, so Retry after a hook failure pushes the same
+		// branches again without asking twice.
+		vscode.commands.registerCommand('ggit.pushBranches', async (branches?: string[]) => {
+			let groups;
+			try {
+				groups = await pickBranchPushes(gitService, Array.isArray(branches) ? branches : undefined);
+			} catch (err) {
+				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
+				return;
+			}
+			if (!groups) {
+				return;
+			}
+			const names = groups.flatMap(g => g.branches.map(b => b.branch));
+			return runGitOperation(
+				names.length === 1 ? `Pushing ${names[0]}…` : `Pushing ${names.length} branches…`,
+				ctx => pushBranchGroups(gitService, groups, ctx),
+				refreshAll,
+				{ hook: 'pre-push', action: 'Push' }
+			);
+		}),
+
+		vscode.commands.registerCommand('ggit.showOutput', () => output.show(true)),
 
 		vscode.commands.registerCommand('ggit.rebase', () =>
 			runGitOperation('Rebasing…', () => rebaseCurrentBranchWithPicker(gitService), refreshAll)
@@ -1361,16 +1416,6 @@ function createDoubleClickGuard(thresholdMs = 400): (key: string) => boolean {
 		lastTime = now;
 		return isDouble;
 	};
-}
-
-async function runGitOperation(title: string, op: () => Promise<void>, onSuccess: () => void): Promise<void> {
-	try {
-		await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, op);
-		onSuccess();
-		BranchHistoryPanel.refreshIfOpen();
-	} catch (err) {
-		vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
-	}
 }
 
 export function deactivate(): void {}

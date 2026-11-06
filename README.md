@@ -55,10 +55,22 @@ the panel and reloading the window.
 - **Merge:** drag a branch onto the current one. Fast-forward, merge commit, `--no-ff`, squash, or
   `--no-commit`.
 - Right-click: Create Branch / Create Tag from Here, Rename, Copy Name, Set Upstream Branch, Delete.
-- Toolbar: Create Branch, Fetch, Pull, Push, Sync, Rebase (`--autostash`).
+- Toolbar: Create Branch, Fetch, Pull, Push, Sync, Rebase (`--autostash`). The `...` menu has
+  **Push Branches…**: pick several published branches and push them in one `git push` per remote,
+  so the pre-push hook runs once.
 - Pull and Sync check the upstream first. A feature branch tracking `origin/main` (what
   `git checkout -b alice/feature-x origin/main` sets up) gets asked before pulling it, and offered
   its own remote branch instead.
+- **Force push:** when a branch and its remote branch have diverged (after a rebase, say), Push asks
+  to force push straight away, without first trying a push that's bound to fail. The confirmation
+  lists the remote commits that would be overwritten. The push only goes through if the remote is
+  still at that commit (`--force-with-lease=<ref>:<sha>`), so a fetch in the background can't turn
+  the lease into a blind overwrite.
+- **Stacked branches:** when other branches sit under the one being rebased (main ← `alice/a` ←
+  `alice/b`), Rebase asks what to do with them. **Rebase the stack** moves them along
+  (`--update-refs`, git 2.38+). **"alice/a" is already merged** replays only the commits after it
+  (`--onto`), for when `alice/a` was squash-merged. Afterwards it offers to push the moved branches
+  together.
 
 **Remotes**: browse and check out remote branches, live search, Add Remote, Edit Remote and
 Remove Remote (right-click a remote; Edit shows and changes its name, URL, and push URL), Delete
@@ -81,11 +93,27 @@ inline, check it off, then Continue/Commit, Skip, or Abort.
   for its full message.
 - Search by author or message. **Show File History** (Working Copy right-click) narrows the log to
   one file and follows renames.
-- Toolbar: Create Branch, Fetch, Pull, Push (offers a force push if rejected), Sync, Refresh,
-  Rebase, Apply/Save Stash, Commit. A remote picker appears when there's more than one remote.
+- Toolbar: Create Branch, Fetch, Pull, Push, Sync, Refresh, Rebase, Apply/Save Stash, Commit.
+  Push turns orange and reads **Force Push…** once the branch has diverged from its remote branch.
+  A remote picker appears when there's more than one remote.
 - Right-click a commit: Reset Branch to Here (Mixed/Hard), Cherry-Pick, Revert, Save Patch, Copy
   Commit Hash.
 - Arrow keys and Page Up/Down to navigate.
+
+**Git hooks**: push and commit run the repo's hooks, husky's included. While a pre-push hook runs,
+its latest output line shows in the progress notification. When a hook stops a push or commit, the
+error is one line, e.g. "Push blocked by the pre-push hook: tailwind failed.", with **Retry**,
+**Skip Hooks…** (`--no-verify`, after a confirmation), **Open Log** (when the hook printed a
+`(full log: <path>)` line or any absolute `.log` path), and **Show Output**.
+
+**Output**: View > Output > **GGit** (or **GGit: Show Output**) logs every push, fetch, pull,
+commit, rebase, merge and checkout with how long it took, any hook output, and full errors.
+
+**Dependencies**: when the checked-out commit changes (a checkout, pull, rebase or merge, from GGit
+or the terminal) and brings a different `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock` or
+`bun.lock` at the repo root, GGit offers to run the install in a terminal. It stays quiet when
+`node_modules` is already newer than the lockfile. Turn it off with
+`ggit.suggestInstallOnLockfileChange`.
 
 **Activity bar badge**: live count of changed files.
 

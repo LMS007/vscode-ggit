@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { describeHookFailure, firstErrorLine, isPushBlockedByHook, parseHookFailure, stripAnsi } from '../git/gitErrors';
 import { GitService } from '../git/gitService';
 import { TagNode, TagRemoteState } from '../tree/tagsTreeProvider';
 import { TagDialogMode, TagHostMessage, TagWebviewMessage } from './tagProtocol';
@@ -118,7 +119,10 @@ export class TagPanel {
 					this.panel.dispose();
 					this.onDone(targets.length > 0);
 				} catch (err) {
-					this.post({ type: 'error', message: explainPushError((err as Error).message, targets[0]?.remote, name) });
+					const message = (err as Error).message;
+					this.gitService.log(`${TITLES[this.mode]} ${name} failed:\n${stripAnsi(message).trimEnd()}`);
+					const hasPrePushHook = (await this.gitService.getHookPath('pre-push').catch(() => undefined)) !== undefined;
+					this.post({ type: 'error', message: explainPushError(message, targets[0]?.remote, name, hasPrePushHook) });
 					// An all-remotes delete that failed partway may still have deleted it from some of them --
 					// refresh so the Tags view stops showing it there.
 					if (targets.length > 1) {
@@ -466,23 +470,20 @@ export class TagPanel {
 
 /** git's own wording for the two rejections this dialog can actually run into only makes sense if
  * you already know how tag pushes work -- both mean the Tags view's picture of the remote is out of
- * date, which is what's worth saying instead. Anything else passes through untouched. */
-function explainPushError(message: string, remote: string | undefined, name: string): string {
+ * date, which is what's worth saying instead. A tag push runs the pre-push hook too; when that's
+ * what stopped it, say so in one line rather than showing the hook's whole output, which the GGit
+ * output channel already has. Anything else passes through untouched. */
+function explainPushError(message: string, remote: string | undefined, name: string, hasPrePushHook: boolean): string {
 	if (/\(stale info\)/.test(message)) {
 		return `${remote}'s "${name}" changed since GGit last checked it, so it wasn't overwritten. Refresh the Tags view to see what it is now.`;
 	}
 	if (/\(already exists\)/.test(message)) {
 		return `${remote} already has a tag named "${name}". Refresh the Tags view; if it's different from yours, Push Tag can overwrite it.`;
 	}
-	return message;
-}
-
-/** The line of a failed push's output that says what went wrong -- skipping git's leading "To <url>". */
-function firstErrorLine(message: string): string {
-	return message
-		.split('\n')
-		.map(line => line.trim())
-		.find(line => line && !line.startsWith('To ')) ?? message.trim();
+	if (hasPrePushHook && isPushBlockedByHook(message)) {
+		return `${describeHookFailure(parseHookFailure(message, 'pre-push'), 'Push')} Its output is in View > Output > GGit.`;
+	}
+	return stripAnsi(message);
 }
 
 function getNonce(): string {

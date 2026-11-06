@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { confirmStagingConflicts } from '../git/gitActions';
+import { describeHookFailure, isCommitBlockedByHook, parseHookFailure, stripAnsi } from '../git/gitErrors';
 import { GitService } from '../git/gitService';
+import { showHookFailure } from '../operationRunner';
 import { CommitHostMessage, CommitWebviewMessage } from './commitProtocol';
 
 /** Shared across every Commit panel instance/reload, not scoped to a single webview session --
@@ -97,6 +99,52 @@ export class CommitPanel {
 		});
 	}
 
+	/** When a pre-commit or commit-msg hook stops the commit, the panel shows one line saying so, and a
+	 * notification offers to retry, commit without hooks, or open the hook's log -- same as a push the
+	 * pre-push hook stopped (see OperationRunner). The hook's full output goes to the GGit output channel. */
+	private async commit(message: string, amend: boolean, noVerify = false): Promise<void> {
+		try {
+			await this.gitService.commit(message, { amend, noVerify });
+		} catch (err) {
+			const error = (err as Error).message;
+			this.gitService.log(`commit${noVerify ? ' (hooks skipped)' : ''} failed:\n${stripAnsi(error).trimEnd()}`);
+			const hook = noVerify ? undefined : await this.commitHookThatFailed(error);
+			if (!hook) {
+				this.post({ type: 'error', message: stripAnsi(error) });
+				return;
+			}
+			const failure = parseHookFailure(error, hook);
+			this.post({ type: 'error', message: `${describeHookFailure(failure, 'Commit')} Its output is in View > Output > GGit.` });
+			showHookFailure(failure, 'Commit', {
+				retry: () => this.commit(message, amend),
+				skipHooks: () => this.commit(message, amend, true),
+			});
+			return;
+		}
+		this.onCommitted();
+		this.onCommitSucceeded();
+		// The draft's job is done once it's actually been committed -- otherwise the next time
+		// this panel opens, it'd pre-fill the message that was *just* committed.
+		void this.context.globalState.update(DRAFT_STATE_KEY, undefined);
+		this.post({ type: 'committed' });
+		await this.sendStaged();
+	}
+
+	/** Which hook a failed commit's error points at, if any: "pre-commit", "commit-msg", or "commit"
+	 * when both exist and the output doesn't say. Undefined when it's one of git's own refusals, or the
+	 * repo has neither hook. */
+	private async commitHookThatFailed(error: string): Promise<string | undefined> {
+		const hooks = (
+			await Promise.all(
+				['pre-commit', 'commit-msg'].map(async hook => ((await this.gitService.getHookPath(hook).catch(() => undefined)) ? hook : undefined))
+			)
+		).filter((hook): hook is string => hook !== undefined);
+		if (hooks.length === 0 || !isCommitBlockedByHook(error)) {
+			return undefined;
+		}
+		return hooks.length === 1 ? hooks[0] : 'commit';
+	}
+
 	private async handleMessage(msg: CommitWebviewMessage): Promise<void> {
 		switch (msg.type) {
 			case 'ready':
@@ -104,19 +152,7 @@ export class CommitPanel {
 				await this.sendStaged();
 				break;
 			case 'commit':
-				try {
-					const message = msg.body ? `${msg.subject}\n\n${msg.body}` : msg.subject;
-					await this.gitService.commit(message, { amend: msg.amend });
-					this.onCommitted();
-					this.onCommitSucceeded();
-					// The draft's job is done once it's actually been committed -- otherwise the next time
-					// this panel opens, it'd pre-fill the message that was *just* committed.
-					void this.context.globalState.update(DRAFT_STATE_KEY, undefined);
-					this.post({ type: 'committed' });
-					await this.sendStaged();
-				} catch (err) {
-					this.post({ type: 'error', message: (err as Error).message });
-				}
+				await this.commit(msg.body ? `${msg.subject}\n\n${msg.body}` : msg.subject, msg.amend);
 				break;
 			case 'draftChanged':
 				void this.context.globalState.update(DRAFT_STATE_KEY, { subject: msg.subject, body: msg.body } satisfies CommitDraft);
@@ -158,11 +194,18 @@ export class CommitPanel {
 		}
 	}
 
+	/** A hook failure's Retry can still commit after the panel's been closed -- there's just nothing
+	 * left to tell. */
 	private post(message: CommitHostMessage): void {
-		void this.panel.webview.postMessage(message);
+		if (!this.disposed) {
+			void this.panel.webview.postMessage(message);
+		}
 	}
 
+	private disposed = false;
+
 	private dispose(): void {
+		this.disposed = true;
 		CommitPanel.current = undefined;
 		while (this.disposables.length) {
 			this.disposables.pop()?.dispose();

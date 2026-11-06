@@ -20,9 +20,10 @@ const remoteSelectEl = document.getElementById('remoteSelect') as HTMLSelectElem
 const addRemoteButtonEl = document.getElementById('addRemoteButton');
 const githubButtonEl = document.getElementById('githubButton');
 
-/** Four states, driven by the same facts the "commits" message already carries:
+/** Five states, driven by the same facts the "commits" message already carries:
  *  - no remote configured at all -> grey "Publish" (nowhere to publish to yet)
  *  - a remote exists, branch never pushed (no upstream) -> purple "Publish"
+ *  - upstream exists, both sides have commits the other doesn't -> orange "Force Push…"
  *  - a remote exists, upstream exists, commits ahead -> green "Push"
  *  - a remote exists, upstream exists, nothing ahead -> grey "Push"
  * Label text (not just color) changes because "Push" and "Publish" really are different actions --
@@ -31,13 +32,15 @@ const githubButtonEl = document.getElementById('githubButton');
  * boolean) because the dropdown is what "is there anywhere to publish to" now means -- there's
  * always at least one entry to check once any remote exists, since the dropdown is built from that
  * same list. */
-function updatePushButton(remotes: string[], hasUpstream: boolean, aheadCount: number): void {
+function updatePushButton(remotes: string[], hasUpstream: boolean, aheadCount: number, needsForcePush: boolean): void {
 	if (!pushButtonEl) {
 		return;
 	}
 	const hasRemote = remotes.length > 0;
-	const label = hasRemote && hasUpstream ? 'Push' : 'Publish';
-	pushButtonEl.classList.toggle('toolbar-btn-success', hasRemote && hasUpstream && aheadCount > 0);
+	const forcePush = hasRemote && hasUpstream && needsForcePush;
+	const label = forcePush ? 'Force Push…' : hasRemote && hasUpstream ? 'Push' : 'Publish';
+	pushButtonEl.classList.toggle('toolbar-btn-warning', forcePush);
+	pushButtonEl.classList.toggle('toolbar-btn-success', hasRemote && hasUpstream && aheadCount > 0 && !forcePush);
 	pushButtonEl.classList.toggle('toolbar-btn-publish', hasRemote && !hasUpstream);
 	if (pushButtonLabelEl) {
 		pushButtonLabelEl.textContent = label;
@@ -814,7 +817,7 @@ window.addEventListener('message', event => {
 			fileFilter = message.filePath;
 			renderFileFilter();
 			renderRemoteSelect(message.remotes, message.selectedRemote);
-			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount);
+			updatePushButton(message.remotes, message.hasUpstream, message.aheadCount, message.needsForcePush);
 			updateBranchActions(message.viewedRef, message.branchName, message.checkedOutBranch);
 			updateGitHubButton(message.githubUrl);
 			commitsEl.scrollTop = 0;

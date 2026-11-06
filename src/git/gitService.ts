@@ -28,6 +28,25 @@ const RECORD_SEP = '\x1e';
 const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(FIELD_SEP);
 const STASH_FORMAT = ['%gd', '%H', '%s', '%aI'].join(FIELD_SEP);
 
+/** For a push, and anything else that runs the pre-push hook. */
+export interface PushOptions {
+	/** Skips the pre-push hook (`--no-verify`). */
+	noVerify?: boolean;
+	/** git's output, and the hook's, as it arrives. */
+	onOutput?: (text: string) => void;
+}
+
+/** One branch for GitService.pushBranches: `lease` is the commit the remote's branch must still be
+ * at for a force push to replace it. Without one, the push is a normal one. */
+export interface BranchPush {
+	branch: string;
+	lease?: string;
+}
+
+/** Commands that change something or talk to a remote -- logged with their duration (see
+ * GitService.onGitSpawned). Read-only queries run on every refresh, so they'd drown these out. */
+const LOGGED_VERBS = new Set(['push', 'fetch', 'pull', 'commit', 'rebase', 'merge', 'checkout', 'switch', 'reset', 'cherry-pick', 'revert', 'init']);
+
 export class GitService {
 	private readonly git: SimpleGit;
 	private gitDirPath?: string;
@@ -57,12 +76,75 @@ export class GitService {
 			unsafe: { allowUnsafeEditor: true },
 			allowEnvironment: Object.keys(process.env).filter(key => key.toLowerCase() !== 'git_editor'),
 		});
+		// One handler for every git process this instance spawns (simple-git only has the one slot).
+		this.git.outputHandler((_binary, stdout, stderr, args) => this.onGitSpawned(args, stdout, stderr));
 	}
 
 	/** Lets other classes holding a GitService reference (tree providers, panels) write to the same
 	 * "GGit" output channel this is constructed with, without each one needing its own wiring. */
 	log(message: string): void {
 		this.logger?.(message);
+	}
+
+	/** Logs each command that changes something, or talks to a remote, with how long it took -- so
+	 * the output channel shows what GGit actually ran, not just what failed -- and hands its output,
+	 * as it arrives, to whoever's watching that kind of command (see watchOutput). The exit code isn't
+	 * known here; a failure is logged by whoever ran the command (see OperationRunner). */
+	private onGitSpawned(args: string[], stdout: NodeJS.ReadableStream, stderr: NodeJS.ReadableStream): void {
+		const verb = gitVerb(args);
+		for (const watcher of this.outputWatchers) {
+			if (watcher.verbs.has(verb)) {
+				stdout.on('data', (chunk: Buffer | string) => watcher.onOutput(String(chunk)));
+				stderr.on('data', (chunk: Buffer | string) => watcher.onOutput(String(chunk)));
+			}
+		}
+		if (LOGGED_VERBS.has(verb)) {
+			const started = Date.now();
+			let open = 2;
+			const onClose = () => {
+				if (--open === 0) {
+					this.logger?.(`[git] ${describeGitArgs(args)} (${formatDuration(Date.now() - started)})`);
+				}
+			};
+			stdout.once('close', onClose);
+			stderr.once('close', onClose);
+		}
+	}
+
+	private readonly outputWatchers = new Set<{ verbs: ReadonlySet<string>; onOutput: (text: string) => void }>();
+
+	/** Runs `fn`, passing the output of every `verbs` git command it starts (e.g. a push, and the
+	 * pre-push hook it runs) to `onOutput` as it arrives. Any other command running at the same time
+	 * with the same verb would be included too -- fine for a push, which GGit only runs one at a time. */
+	private async watchOutput<T>(verbs: string[], onOutput: ((text: string) => void) | undefined, fn: () => Promise<T>): Promise<T> {
+		if (!onOutput) {
+			return fn();
+		}
+		const watcher = { verbs: new Set(verbs), onOutput };
+		this.outputWatchers.add(watcher);
+		try {
+			return await fn();
+		} finally {
+			this.outputWatchers.delete(watcher);
+		}
+	}
+
+	/** The script git runs for `hook`, if the repo has one that would run -- resolved through git, so
+	 * core.hooksPath counts. That's how husky installs: it points core.hooksPath at .husky/_, which
+	 * holds a stub for every hook that only runs .husky/<hook> if it exists, so a stub alone isn't one.
+	 * Git skips a hook file that isn't executable, so that isn't one either. */
+	async getHookPath(hook: string): Promise<string | undefined> {
+		const raw = (await this.git.raw(['rev-parse', '--git-path', `hooks/${hook}`])).trim();
+		const hookPath = path.resolve(this.repoRoot, raw);
+		if (!isExecutableFile(hookPath)) {
+			return undefined;
+		}
+		const dir = path.dirname(hookPath);
+		if (path.basename(dir) === '_' && path.basename(path.dirname(dir)) === '.husky') {
+			const userHook = path.join(path.dirname(dir), hook);
+			return fs.existsSync(userHook) ? userHook : undefined;
+		}
+		return hookPath;
 	}
 
 	/** Absolute path for a repo-relative one, refusing anything that would land outside repoRoot. Paths
@@ -530,6 +612,29 @@ export class GitService {
 		}
 	}
 
+	/** Every local branch that tracks a branch on a remote, in one call: which remote, the remote
+	 * branch's name there, and ahead/behind against it. Leaves out a branch whose remote branch is gone,
+	 * and one tracking another local branch. */
+	async listTrackedBranches(): Promise<{ name: string; remote: string; upstreamBranch: string; ahead: number; behind: number }[]> {
+		const out = await this.git.raw([
+			'for-each-ref',
+			`--format=%(refname:short)${FIELD_SEP}%(upstream:remotename)${FIELD_SEP}%(upstream:short)${FIELD_SEP}%(upstream:track)`,
+			'refs/heads',
+		]);
+		return out
+			.split('\n')
+			.filter(Boolean)
+			.map(line => line.split(FIELD_SEP))
+			.filter(([, remote, upstream, track]) => remote && remote !== '.' && upstream && track !== '[gone]')
+			.map(([name, remote, upstream, track]) => ({
+				name,
+				remote,
+				upstreamBranch: upstream.startsWith(`${remote}/`) ? upstream.slice(remote.length + 1) : upstream,
+				ahead: Number(track.match(/ahead (\d+)/)?.[1] ?? 0),
+				behind: Number(track.match(/behind (\d+)/)?.[1] ?? 0),
+			}));
+	}
+
 	/** The upstream exactly as configured, e.g. "origin/main" -- unlike getUpstreamBranch, still
 	 * returned when that remote branch is gone, so Set Upstream can show it and offer to clear it. */
 	async getConfiguredUpstream(branchName: string): Promise<string | undefined> {
@@ -594,8 +699,58 @@ export class GitService {
 	 * something to push. Same cheap for-each-ref plumbing as listLocalBranches' ahead/behind, not a
 	 * commit-walking call, so this doesn't reintroduce the unbounded-cost problem getLog just fixed. */
 	async getAheadCount(branchName: string): Promise<number> {
+		return (await this.getAheadBehind(branchName)).ahead;
+	}
+
+	/** getAheadCount, plus how many commits the upstream has that the branch doesn't. Both 0 without
+	 * an upstream. */
+	async getAheadBehind(branchName: string): Promise<{ ahead: number; behind: number }> {
 		const out = (await this.git.raw(['for-each-ref', '--format=%(upstream:track)', `refs/heads/${branchName}`])).trim();
-		return Number(out.match(/ahead (\d+)/)?.[1] ?? 0);
+		return { ahead: Number(out.match(/ahead (\d+)/)?.[1] ?? 0), behind: Number(out.match(/behind (\d+)/)?.[1] ?? 0) };
+	}
+
+	/** The full hash `ref` points at, or undefined if it doesn't resolve to a commit. */
+	async resolveCommit(ref: string): Promise<string | undefined> {
+		assertNotOptionLike(ref, 'ref');
+		const out = await this.git.raw(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+		return out.trim() || undefined;
+	}
+
+	/** The commit the checked-out branch is on, or undefined in a repo with no commits yet. */
+	async getHeadSha(): Promise<string | undefined> {
+		const out = await this.git.raw(['rev-parse', '--verify', '--quiet', 'HEAD']);
+		return out.trim() || undefined;
+	}
+
+	/** How many commits `include` has that `exclude` doesn't, and the newest `limit` of them. */
+	async getCommitsNotIn(
+		include: string,
+		exclude: string,
+		limit: number
+	): Promise<{ count: number; commits: { sha: string; subject: string }[] }> {
+		assertNotOptionLike(include, 'ref');
+		assertNotOptionLike(exclude, 'ref');
+		const range = `${exclude}..${include}`;
+		const [countOut, logOut] = await Promise.all([
+			this.git.raw(['rev-list', '--count', range, '--']),
+			limit > 0 ? this.git.raw(['log', `--max-count=${limit}`, `--format=%h${FIELD_SEP}%s`, range, '--']) : '',
+		]);
+		const commits = logOut
+			.split('\n')
+			.filter(Boolean)
+			.map(line => {
+				const [sha, subject] = line.split(FIELD_SEP);
+				return { sha, subject };
+			});
+		return { count: Number(countOut.trim()) || 0, commits };
+	}
+
+	/** Which of `paths` differ between two commits. */
+	async changedPaths(from: string, to: string, paths: string[]): Promise<string[]> {
+		assertObjectId(from);
+		assertObjectId(to);
+		const out = await this.git.raw(['diff', '--name-only', from, to, '--', ...paths]);
+		return out.split('\n').filter(Boolean);
 	}
 
 	/** Hashes of `branchName`'s commits that haven't been pushed yet, newest first, at most `limit` of
@@ -647,21 +802,59 @@ export class GitService {
 		await this.git.raw(['fetch', remote, `refs/heads/${branch}:refs/heads/${localBranch}`]);
 	}
 
-	/** Pushes an already-tracked branch to its upstream. `--force-with-lease` (not a blunt `--force`)
-	 * when forcing -- refuses if the remote ref moved since your last fetch of it, so this can't
-	 * silently clobber a push someone else made in the meantime the way plain `--force` could. */
-	async pushBranch(branchName: string, remote: string, options?: { force?: boolean }): Promise<void> {
+	/** Pushes one branch to the same-named branch on `remote` -- see pushBranches. */
+	async pushBranch(branchName: string, remote: string, options: PushOptions & { lease?: string } = {}): Promise<void> {
+		await this.pushBranches(remote, [{ branch: branchName, lease: options.lease }], options);
+	}
+
+	/** Pushes each branch to the same-named branch on `remote`, in one `git push` -- so the pre-push
+	 * hook runs once for all of them. Same-named, like a plain `git push <remote> <branch>`, which
+	 * doesn't follow a differently named upstream either (verified).
+	 *
+	 * A branch with a `lease` is force-pushed, but only if the remote's branch is still at that commit:
+	 * `--force-with-lease=<ref>:<sha>`. Pinned to a commit rather than a bare `--force-with-lease`,
+	 * which compares against the remote-tracking ref -- and any fetch moves that, GGit's own or VS
+	 * Code's git.autofetch, after which the lease would protect nothing. (`--force-if-includes` is no
+	 * help here: git ignores it once the lease names a commit.) Branches without one are pushed
+	 * normally, so a non-fast-forward one is still rejected. Git doesn't make this all-or-nothing;
+	 * `porcelain` asks for per-ref results (see parsePorcelainPush) to tell which ones went through.
+	 * Returns git's output. */
+	async pushBranches(remote: string, branches: BranchPush[], options: PushOptions & { porcelain?: boolean } = {}): Promise<string> {
+		assertNotOptionLike(remote, 'remote name');
 		const args = ['push'];
-		if (options?.force) {
-			args.push('--force-with-lease');
+		if (options.porcelain) {
+			args.push('--porcelain');
 		}
-		args.push(remote, branchName);
-		await this.git.raw(args);
+		if (options.noVerify) {
+			args.push('--no-verify');
+		}
+		for (const { branch, lease } of branches) {
+			assertNotOptionLike(branch, 'branch name');
+			if (lease) {
+				assertObjectId(lease);
+				args.push(`--force-with-lease=refs/heads/${branch}:${lease}`);
+			}
+		}
+		args.push(remote, ...branches.map(({ branch }) => `refs/heads/${branch}:refs/heads/${branch}`));
+		return this.watchOutput(['push'], options.onOutput, () => this.git.raw(args));
 	}
 
 	/** Pushes a never-before-published local branch and sets it up to track the new remote branch. */
-	async publishBranch(branchName: string, remoteBranchName: string, remote: string): Promise<void> {
-		await this.git.raw(['push', '-u', remote, `${branchName}:${remoteBranchName}`]);
+	async publishBranch(branchName: string, remoteBranchName: string, remote: string, options: PushOptions = {}): Promise<void> {
+		assertNotOptionLike(remote, 'remote name');
+		const args = ['push', '-u'];
+		if (options.noVerify) {
+			args.push('--no-verify');
+		}
+		args.push(remote, `${branchName}:${remoteBranchName}`);
+		await this.watchOutput(['push'], options.onOutput, () => this.git.raw(args));
+	}
+
+	/** Updates the remote-tracking branches for `branches` on `remote` -- one round trip for all of them. */
+	async fetchBranches(remote: string, branches: string[]): Promise<void> {
+		assertNotOptionLike(remote, 'remote name');
+		branches.forEach(branch => assertNotOptionLike(branch, 'branch name'));
+		await this.git.raw(['fetch', remote, ...branches]);
 	}
 
 	/** Creates a new local branch off `startPoint`. `track` sets it up to track `startPoint` for push/pull; `checkout` switches to it immediately. */
@@ -980,12 +1173,24 @@ export class GitService {
 	 * the index is empty and `amend` isn't set — no smart-commit fallback to staging everything,
 	 * matching the rest of GGit's explicit stage/unstage model rather than the built-in Git extension's
 	 * implicit "commit all". */
-	async commit(message: string, options: { amend?: boolean } = {}): Promise<void> {
+	async commit(message: string, options: { amend?: boolean; noVerify?: boolean } = {}): Promise<void> {
 		const args = ['commit', '-m', message];
 		if (options.amend) {
 			args.push('--amend');
 		}
-		await this.git.raw(args);
+		// Skips the pre-commit and commit-msg hooks.
+		if (options.noVerify) {
+			args.push('--no-verify');
+		}
+		const before = await this.getHeadSha();
+		const out = (await this.git.raw(args)).trim();
+		// simple-git only rejects when git wrote to stderr, and some failures don't: "nothing to commit"
+		// goes to stdout, and a hook that fails without printing anything leaves git with nothing to say
+		// at all. A commit that happened moves HEAD. (An amend could, in theory, land on the very same
+		// hash within the same second -- git reporting it is good enough there.)
+		if ((await this.getHeadSha()) === before && !(options.amend && out)) {
+			throw new Error(out || "The commit wasn't made. A pre-commit or commit-msg hook may have stopped it without saying why.");
+		}
 	}
 
 	/** Aggregate +/- across everything currently staged — used for the Commit panel's summary line. */
@@ -1214,8 +1419,64 @@ export class GitService {
 	 * restored after, so there's no "you have local changes" failure mode to expose a checkbox for.
 	 * `-c core.editor=true` no-ops any editor git would otherwise try to open (there's no TTY here for
 	 * one to be usable anyway, so letting it try would just hang forever). */
-	async rebaseOnto(branchName: string): Promise<void> {
-		await this.git.raw(['-c', 'core.editor=true', 'rebase', branchName, '--autostash']);
+	async rebaseOnto(branchName: string, options: { upstream?: string; updateRefs?: boolean } = {}): Promise<void> {
+		assertNotOptionLike(branchName, 'branch name');
+		const args = ['-c', 'core.editor=true', 'rebase', '--autostash'];
+		// Moves every other local branch whose tip is among the replayed commits along with them --
+		// the branches stacked under this one. git 2.38+ (see supportsUpdateRefs).
+		if (options.updateRefs) {
+			args.push('--update-refs');
+		}
+		// Replays only the commits after `upstream`, e.g. after the branch this one was stacked on got
+		// squash-merged: its original commits aren't on `branchName`, so a plain rebase would replay
+		// them too, onto the squashed copy of themselves.
+		if (options.upstream) {
+			assertNotOptionLike(options.upstream, 'branch name');
+			args.push('--onto', branchName, options.upstream);
+		} else {
+			args.push(branchName);
+		}
+		await this.git.raw(args);
+	}
+
+	/** Local branches other than the checked-out one whose tip is a commit a rebase onto `onto` would
+	 * replay: on HEAD, not yet on `onto`. In a stack (main <- alice/a <- alice/b, with alice/b checked
+	 * out), rebasing onto main finds alice/a. Nearest to `onto` first. `upstreamGone` marks one whose
+	 * remote branch was deleted -- often a sign it's been merged. */
+	async listBranchesBetween(onto: string): Promise<{ name: string; distance: number; upstreamGone: boolean }[]> {
+		assertNotOptionLike(onto, 'branch name');
+		const [current, out] = await Promise.all([
+			this.getCurrentBranch(),
+			this.git.raw([
+				'for-each-ref',
+				'--merged=HEAD',
+				`--no-merged=${onto}`,
+				`--format=%(refname:short)${FIELD_SEP}%(upstream:track)`,
+				'refs/heads/',
+			]),
+		]);
+		const branches = out
+			.split('\n')
+			.filter(Boolean)
+			.map(line => line.split(FIELD_SEP))
+			.filter(([name]) => name !== current);
+		const withDistance = await Promise.all(
+			branches.map(async ([name, track]) => ({
+				name,
+				distance: Number((await this.git.raw(['rev-list', '--count', `${onto}..refs/heads/${name}`, '--'])).trim()) || 0,
+				upstreamGone: track === '[gone]',
+			}))
+		);
+		return withDistance.sort((a, b) => a.distance - b.distance);
+	}
+
+	private gitVersion?: Promise<number[]>;
+
+	/** `rebase --update-refs` arrived in git 2.38. */
+	async supportsUpdateRefs(): Promise<boolean> {
+		this.gitVersion ??= this.git.raw(['version']).then(out => (out.match(/(\d+)\.(\d+)/) ?? []).slice(1).map(Number));
+		const [major = 0, minor = 0] = await this.gitVersion;
+		return major > 2 || (major === 2 && minor >= 38);
 	}
 
 	/** Resumes a paused rebase — call this once every conflicted file has been resolved and staged. */
@@ -1361,6 +1622,39 @@ export class GitService {
 			throw new Error('Cannot pull: HEAD is detached (no current branch).');
 		}
 		await this.git.pull(remote, current);
+	}
+}
+
+/** The git subcommand in a spawned command line, past any leading options -- e.g. "push" in
+ * `--no-optional-locks -c core.editor=true push origin main`. */
+function gitVerb(args: string[]): string {
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === '-c' || args[i] === '-C') {
+			i++;
+		} else if (!args[i].startsWith('-')) {
+			return args[i];
+		}
+	}
+	return '';
+}
+
+/** A command line for the log: without the --no-optional-locks prefix every command gets, and with a
+ * commit message cut short. */
+function describeGitArgs(args: string[]): string {
+	const shown = args.filter(arg => arg !== '--no-optional-locks').map(arg => (arg.length > 80 ? `${arg.slice(0, 77)}...` : arg));
+	return `git ${shown.map(arg => (/[\s"']/.test(arg) ? JSON.stringify(arg) : arg)).join(' ')}`;
+}
+
+export function formatDuration(ms: number): string {
+	return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function isExecutableFile(filePath: string): boolean {
+	try {
+		fs.accessSync(filePath, fs.constants.X_OK);
+		return fs.statSync(filePath).isFile();
+	} catch {
+		return false;
 	}
 }
 
