@@ -850,7 +850,7 @@ export class GitService {
 	}
 
 	/** Pushes one branch to the same-named branch on `remote` -- see pushBranches. */
-	async pushBranch(branchName: string, remote: string, options: PushOptions & { lease?: string } = {}): Promise<void> {
+	async pushBranch(branchName: string, remote: string, options: PushOptions & { lease?: string; setUpstream?: boolean } = {}): Promise<void> {
 		await this.pushBranches(remote, [{ branch: branchName, lease: options.lease }], options);
 	}
 
@@ -865,12 +865,21 @@ export class GitService {
 	 * help here: git ignores it once the lease names a commit.) Branches without one are pushed
 	 * normally, so a non-fast-forward one is still rejected. Git doesn't make this all-or-nothing;
 	 * `porcelain` asks for per-ref results (see parsePorcelainPush) to tell which ones went through.
-	 * Returns git's output. */
-	async pushBranches(remote: string, branches: BranchPush[], options: PushOptions & { porcelain?: boolean } = {}): Promise<string> {
+	 * `setUpstream` (`-u`) also makes each branch track the remote branch it went to -- git does that
+	 * even when the remote already had it ("Everything up-to-date"; verified), but not when it's
+	 * rejected. Returns git's output. */
+	async pushBranches(
+		remote: string,
+		branches: BranchPush[],
+		options: PushOptions & { porcelain?: boolean; setUpstream?: boolean } = {}
+	): Promise<string> {
 		assertNotOptionLike(remote, 'remote name');
 		const args = ['push'];
 		if (options.porcelain) {
 			args.push('--porcelain');
+		}
+		if (options.setUpstream) {
+			args.push('-u');
 		}
 		if (options.noVerify) {
 			args.push('--no-verify');

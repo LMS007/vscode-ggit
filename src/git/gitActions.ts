@@ -224,7 +224,12 @@ export async function needsForcePush(gitService: GitService, branch: string): Pr
  * hook for it). Otherwise it tries a normal push, and only a non-fast-forward rejection (the remote
  * got commits since the last fetch) leads to the confirmation -- same "try safe first, confirm before
  * escalating" pattern as deleteLocalBranch's force-delete path below. */
-async function pushWithForceEscalation(gitService: GitService, branchName: string, remote: string, options: PushOptions): Promise<void> {
+async function pushWithForceEscalation(
+	gitService: GitService,
+	branchName: string,
+	remote: string,
+	options: PushOptions & { setUpstream?: boolean }
+): Promise<void> {
 	if (await hasDivergedFrom(gitService, branchName, remote)) {
 		await confirmAndForcePush(gitService, branchName, remote, options);
 		return;
@@ -246,7 +251,12 @@ const LISTED_COMMITS = 5;
  * If the user goes ahead, the push is pinned to the commit shown (see GitService.pushBranches), so
  * anything pushed in the meantime makes it fail rather than get overwritten unseen. When nothing would
  * be dropped after all -- a fast-forward once fetched -- it's a plain push, with no dialog. */
-async function confirmAndForcePush(gitService: GitService, branch: string, remote: string, options: PushOptions): Promise<void> {
+async function confirmAndForcePush(
+	gitService: GitService,
+	branch: string,
+	remote: string,
+	options: PushOptions & { setUpstream?: boolean }
+): Promise<void> {
 	const remoteBranch = `${remote}/${branch}`;
 	let fetchNote = '';
 	try {
@@ -314,7 +324,12 @@ export async function pushLocalBranch(
 
 	const upstream = await gitService.getUpstreamBranch(branch);
 	if (upstream) {
-		await pushWithForceEscalation(gitService, branch, splitRemoteBranch(upstream).remote, options);
+		// Push goes to the same-named remote branch whatever the upstream is. A feature branch that
+		// tracks its remote's mainline by accident (see findMistakenUpstream) would otherwise keep
+		// showing ↑ against that mainline after every push, so the push also makes the branch it
+		// went to the upstream -- the same `-u` a publish does.
+		const setUpstream = (await findMistakenUpstream(gitService, branch, upstream)) !== undefined;
+		await pushWithForceEscalation(gitService, branch, splitRemoteBranch(upstream).remote, { ...options, setUpstream });
 		return;
 	}
 
