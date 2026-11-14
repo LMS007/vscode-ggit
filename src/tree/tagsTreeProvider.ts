@@ -49,6 +49,17 @@ export class TagsTreeProvider implements vscode.TreeDataProvider<TagNode> {
 		this._onDidChangeTreeData.fire();
 	}
 
+	/** Forgets what the remotes said, after switching repositories: another repo's "origin" has other
+	 * tags. The next load, once the view is showing, asks the new repo's remotes. */
+	resetRemotes(): void {
+		this.remoteLoadGeneration++;
+		this.remoteLoadStarted = false;
+		this.remoteTags = new Map();
+		this._onDidChangeRemoteStatus.fire(undefined);
+		this._onDidChangeRemoteTags.fire(undefined);
+		this.refresh();
+	}
+
 	refreshRemotes(): void {
 		this.remoteLoadStarted = true;
 		const generation = ++this.remoteLoadGeneration;

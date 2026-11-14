@@ -85,6 +85,12 @@ export class CreateBranchPanel {
 		void this.panel.webview.postMessage(message);
 	}
 
+	/** Closes the open tab, if any. Each one belongs to the repository it opened in, so switching
+	 * repositories closes it (see extension.ts). */
+	static close(): void {
+		CreateBranchPanel.current?.panel.dispose();
+	}
+
 	private dispose(): void {
 		CreateBranchPanel.current = undefined;
 		while (this.disposables.length) {

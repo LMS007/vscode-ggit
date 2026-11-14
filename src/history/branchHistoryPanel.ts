@@ -485,6 +485,16 @@ export class BranchHistoryPanel {
 		void this.panel.webview.postMessage(message);
 	}
 
+	static isOpen(): boolean {
+		return BranchHistoryPanel.current !== undefined;
+	}
+
+	/** Closes the open tab, if any. Each one belongs to the repository it opened in, so switching
+	 * repositories closes it (see extension.ts). */
+	static close(): void {
+		BranchHistoryPanel.current?.panel.dispose();
+	}
+
 	private dispose(): void {
 		BranchHistoryPanel.current = undefined;
 		while (this.disposables.length) {

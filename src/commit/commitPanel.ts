@@ -204,6 +204,12 @@ export class CommitPanel {
 
 	private disposed = false;
 
+	/** Closes the open tab, if any. Each one belongs to the repository it opened in, so switching
+	 * repositories closes it (see extension.ts). */
+	static close(): void {
+		CommitPanel.current?.panel.dispose();
+	}
+
 	private dispose(): void {
 		this.disposed = true;
 		CommitPanel.current = undefined;

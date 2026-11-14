@@ -13,8 +13,8 @@ export async function openDiffForFile(gitService: GitService, sha: string, file:
 	const leftPath = file.oldPath ?? file.path;
 	const rightPath = file.path;
 
-	const leftUri = toGGitShowUri(leftPath, leftRef);
-	const rightUri = toGGitShowUri(rightPath, rightRef);
+	const leftUri = toGGitShowUri(leftPath, leftRef, gitService.repoRoot);
+	const rightUri = toGGitShowUri(rightPath, rightRef, gitService.repoRoot);
 
 	const fileName = rightPath.split('/').pop() ?? rightPath;
 	const title = `${fileName} (${shortSha(leftRef)} ↔ ${shortSha(rightRef)})`;
@@ -32,12 +32,12 @@ export async function openDiffForWorkingChange(gitService: GitService, file: Wor
 	const isDeleted = file.status === 'D';
 
 	const leftRef = isNew ? EMPTY_REF : file.state === 'staged' ? 'HEAD' : INDEX_REF;
-	const leftUri = toGGitShowUri(file.path, leftRef);
+	const leftUri = toGGitShowUri(file.path, leftRef, gitService.repoRoot);
 
 	const rightUri = isDeleted
-		? toGGitShowUri(file.path, EMPTY_REF)
+		? toGGitShowUri(file.path, EMPTY_REF, gitService.repoRoot)
 		: file.state === 'staged'
-			? toGGitShowUri(file.path, INDEX_REF)
+			? toGGitShowUri(file.path, INDEX_REF, gitService.repoRoot)
 			: vscode.Uri.file(path.join(gitService.repoRoot, file.path));
 
 	const fileName = file.path.split('/').pop() ?? file.path;

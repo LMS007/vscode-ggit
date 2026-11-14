@@ -22,34 +22,36 @@ const SETTING = 'suggestInstallOnLockfileChange';
  * hook that can't resolve a package the new commits started using. Checked on every refresh, which
  * is cheap: one `rev-parse` unless HEAD moved. */
 export class DependencyCheck {
-	/** HEAD as of the last check. Not updated mid-rebase or mid-merge: the check waits for it to
-	 * finish, then compares against where it started. */
-	private lastHead: string | undefined;
+	/** Each repository's HEAD as of its last check, by repo root. Not updated mid-rebase or mid-merge:
+	 * the check waits for it to finish, then compares against where it started. */
+	private readonly lastHeads = new Map<string, string | undefined>();
 
-	constructor(private readonly gitService: GitService) {}
+	/** `getGitService` gives the active repository's; each check holds on to the one it started with. */
+	constructor(private readonly getGitService: () => GitService) {}
 
 	async check(): Promise<void> {
 		if (!vscode.workspace.getConfiguration('ggit').get<boolean>(SETTING, true)) {
-			this.lastHead = undefined;
+			this.lastHeads.clear();
 			return;
 		}
-		if ((await this.gitService.isRebaseInProgress()) || (await this.gitService.isMergeInProgress())) {
+		const gitService = this.getGitService();
+		if ((await gitService.isRebaseInProgress()) || (await gitService.isMergeInProgress())) {
 			return;
 		}
-		const head = await this.gitService.getHeadSha();
+		const head = await gitService.getHeadSha();
 		// Read and replaced with no await in between, so overlapping checks (refreshes come in bursts)
 		// can't both see the same move.
-		const previous = this.lastHead;
-		this.lastHead = head;
+		const previous = this.lastHeads.get(gitService.repoRoot);
+		this.lastHeads.set(gitService.repoRoot, head);
 		if (!previous || !head || previous === head) {
 			return;
 		}
-		const changed = await this.gitService.changedPaths(previous, head, LOCKFILES.map(l => l.file));
+		const changed = await gitService.changedPaths(previous, head, LOCKFILES.map(l => l.file));
 		const lockfile = LOCKFILES.find(l => changed.includes(l.file));
-		if (!lockfile || !this.installLooksStale(lockfile)) {
+		if (!lockfile || !installLooksStale(gitService.repoRoot, lockfile)) {
 			return;
 		}
-		this.gitService.log(`dependencyCheck: ${lockfile.file} changed between ${previous.slice(0, 7)} and ${head.slice(0, 7)}`);
+		gitService.log(`dependencyCheck: ${lockfile.file} changed between ${previous.slice(0, 7)} and ${head.slice(0, 7)}`);
 		const install = `Run ${lockfile.manager} install`;
 		const stopAsking = "Don't Ask Again";
 		const choice = await vscode.window.showInformationMessage(
@@ -58,30 +60,29 @@ export class DependencyCheck {
 			stopAsking
 		);
 		if (choice === install) {
-			const terminal = vscode.window.createTerminal({ name: `GGit: ${lockfile.manager} install`, cwd: this.gitService.repoRoot });
+			const terminal = vscode.window.createTerminal({ name: `GGit: ${lockfile.manager} install`, cwd: gitService.repoRoot });
 			terminal.show();
 			terminal.sendText(`${lockfile.manager} install`);
 		} else if (choice === stopAsking) {
 			await vscode.workspace.getConfiguration('ggit').update(SETTING, false, vscode.ConfigurationTarget.Global);
 		}
 	}
+}
 
-	/** Whether node_modules is older than the lockfile on disk. Nothing to say when there's no
-	 * node_modules at all (never installed here, or not a JS project). A lockfile the new commit
-	 * changed, but that an install has since caught up with -- e.g. one `pnpm add` just rewrote, then
-	 * got committed -- doesn't count. Without a known marker to go by, assume it's stale. */
-	private installLooksStale(lockfile: (typeof LOCKFILES)[number]): boolean {
-		const root = this.gitService.repoRoot;
-		try {
-			if (!fs.existsSync(path.join(root, 'node_modules'))) {
-				return false;
-			}
-			const lockfileTime = fs.statSync(path.join(root, lockfile.file)).mtimeMs;
-			const marker = lockfile.installMarkers.map(m => path.join(root, m)).find(m => fs.existsSync(m));
-			return !marker || fs.statSync(marker).mtimeMs < lockfileTime;
-		} catch {
-			// The lockfile itself is gone -- the new commit deleted it.
+/** Whether node_modules is older than the lockfile on disk. Nothing to say when there's no
+ * node_modules at all (never installed here, or not a JS project). A lockfile the new commit
+ * changed, but that an install has since caught up with -- e.g. one `pnpm add` just rewrote, then
+ * got committed -- doesn't count. Without a known marker to go by, assume it's stale. */
+function installLooksStale(root: string, lockfile: (typeof LOCKFILES)[number]): boolean {
+	try {
+		if (!fs.existsSync(path.join(root, 'node_modules'))) {
 			return false;
 		}
+		const lockfileTime = fs.statSync(path.join(root, lockfile.file)).mtimeMs;
+		const marker = lockfile.installMarkers.map(m => path.join(root, m)).find(m => fs.existsSync(m));
+		return !marker || fs.statSync(marker).mtimeMs < lockfileTime;
+	} catch {
+		// The lockfile itself is gone -- the new commit deleted it.
+		return false;
 	}
 }

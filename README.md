@@ -32,8 +32,17 @@ window's integrated terminal instead.
 ## Features
 
 **New repository**: in a folder that isn't a git repo yet, Working Copy offers **Initialize
-Repository Here** or **Create in New Subfolder…** (then offers to open that folder, since GGit
-works on the open folder). The first branch is `main` unless `init.defaultBranch` says otherwise.
+Repository Here** or **Create in New Subfolder…** (GGit then switches to the new repository; one
+nested deeper, it offers to open that folder instead). The first branch is `main` unless
+`init.defaultBranch` says otherwise.
+
+**Several repositories in one folder**: when the open folder holds repositories directly inside
+it (a folder of checkouts, or a superproject and its submodules), a **Repository** dropdown at the
+top of the sidebar picks which one every view shows. The folder itself is listed too when it's a
+repository. Each option shows its branch and changed-file count, and the line below links the
+other repositories with changes. Only one level down is searched. Switching closes GGit's tabs for
+the previous repository (History reopens on the new one), and waits while a GGit operation is
+running. Also in the Command Palette as **GGit: Switch Repository…**.
 
 **Working Copy**
 - Checkbox stages/unstages. A partly staged file shows as two rows, `(staged)` and `(unstaged)`.

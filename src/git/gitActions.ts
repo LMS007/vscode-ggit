@@ -1,10 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { GGIT_SHOW_SCHEME, INDEX_REF } from '../diff/showContentProvider';
+import { GGIT_SHOW_SCHEME, ggitShowRepo, INDEX_REF } from '../diff/showContentProvider';
 import { saveOpenDocumentIfDirty } from '../documentUtils';
 import { isNonFastForwardRejection, isStaleLeaseRejection, joinWithAnd, parsePorcelainPush } from './gitErrors';
 import { BranchPush, GitService, parseStashSubject, PushOptions, splitRemoteBranch } from './gitService';
+import { isInsideFolder } from './repositories';
 import { PickOperation, WorkingChangeFile } from './types';
 
 /** Picks a remote with no prompt at all: `preferredRemote` if given (the History tab's own remote
@@ -986,6 +987,9 @@ function resolveHunkTarget(
 		if (uri.scheme !== 'file') {
 			throw new Error("Place the cursor in the working-tree (right) side of an unstaged change's diff.");
 		}
+		if (!isInsideFolder(gitService.repoRoot, uri.fsPath)) {
+			throw new Error(otherRepositoryMessage(gitService));
+		}
 		return { relPath: path.relative(gitService.repoRoot, uri.fsPath), startLine, endLine };
 	}
 	if (uri.scheme !== GGIT_SHOW_SCHEME) {
@@ -995,7 +999,16 @@ function resolveHunkTarget(
 	if (ref !== INDEX_REF) {
 		throw new Error("This isn't a staged-changes diff.");
 	}
+	// A diff opened before switching repositories: its path means a file in that other repository.
+	const repo = ggitShowRepo(uri);
+	if (repo !== undefined && path.relative(repo, gitService.repoRoot) !== '') {
+		throw new Error(otherRepositoryMessage(gitService));
+	}
 	return { relPath: uri.path.replace(/^\//, ''), startLine, endLine };
+}
+
+function otherRepositoryMessage(gitService: GitService): string {
+	return `This diff is from another repository than ${path.basename(gitService.repoRoot)} -- switch GGit to that repository first.`;
 }
 
 /** GGit's own replacement for the built-in Git extension's "Stage Selected Ranges" — that command

@@ -34,6 +34,15 @@ export class OperationRunner {
 		private readonly afterSuccess: () => void
 	) {}
 
+	/** Titles of the operations running right now, oldest first. */
+	private readonly running: string[] = [];
+
+	/** The title of an operation still running, if any. Switching repositories waits for it, since the
+	 * rest of its steps would otherwise run in the newly active repository (see extension.ts). */
+	get busyWith(): string | undefined {
+		return this.running[0];
+	}
+
 	/** Never rejects: a failure is shown, not thrown. Resolves once the operation is over -- without
 	 * waiting for the error notification, which can sit unanswered in the notification center. */
 	async run(
@@ -42,6 +51,21 @@ export class OperationRunner {
 		onSuccess: () => void,
 		options: OperationOptions = {},
 		noVerify = false
+	): Promise<void> {
+		this.running.push(title);
+		try {
+			await this.runOnce(title, op, onSuccess, options, noVerify);
+		} finally {
+			this.running.splice(this.running.indexOf(title), 1);
+		}
+	}
+
+	private async runOnce(
+		title: string,
+		op: (ctx: OperationContext) => Promise<void>,
+		onSuccess: () => void,
+		options: OperationOptions,
+		noVerify: boolean
 	): Promise<void> {
 		const hookPath =
 			options.hook && !noVerify ? await this.gitService.getHookPath(options.hook).catch(() => undefined) : undefined;

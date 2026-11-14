@@ -220,6 +220,12 @@ export class ConflictsPanel {
 		void this.panel.webview.postMessage(message);
 	}
 
+	/** Closes the open tab, if any. Each one belongs to the repository it opened in, so switching
+	 * repositories closes it (see extension.ts). */
+	static close(): void {
+		ConflictsPanel.current?.panel.dispose();
+	}
+
 	private dispose(): void {
 		ConflictsPanel.current = undefined;
 		while (this.disposables.length) {

@@ -33,11 +33,13 @@ import {
 	syncLocalBranch,
 	unstageHunkAtCursor,
 } from './git/gitActions';
-import { GitService, splitRemoteBranch, unlessNotARepo } from './git/gitService';
+import { splitRemoteBranch, unlessNotARepo } from './git/gitService';
+import { isInsideFolder, Repositories, resolveGitDir } from './git/repositories';
 import { BranchInfo, RemoteBranchInfo, StashInfo, WorkingChangeFile } from './git/types';
 import { DependencyCheck } from './dependencyCheck';
 import { OperationRunner } from './operationRunner';
 import { RebasePanel } from './rebase/rebasePanel';
+import { RepoPickerViewProvider } from './repo/repoPickerView';
 import { ActiveBranchDecorationProvider } from './tree/activeBranchDecoration';
 import { BranchTreeNode } from './tree/branchTree';
 import { BranchesDragAndDropController } from './tree/branchesDragAndDrop';
@@ -72,16 +74,22 @@ export function activate(context: vscode.ExtensionContext): void {
 	// state) rather than the clean throwaway repos used to test this stuff in isolation.
 	const output = vscode.window.createOutputChannel('GGit');
 	context.subscriptions.push(output);
-	output.appendLine(`GGit: activated at ${new Date().toISOString()}, repoRoot=${workspaceFolder.uri.fsPath}`);
+	output.appendLine(`GGit: activated at ${new Date().toISOString()}, folder=${workspaceFolder.uri.fsPath}`);
 
-	const gitService = new GitService(workspaceFolder.uri.fsPath, message => output.appendLine(message));
+	// The opened folder's repositories: the folder itself and/or the ones directly inside it, with the
+	// Repository dropdown choosing between them when there's more than one (see Repositories and
+	// RepoPickerViewProvider). `gitService` always acts on the active one, for the views and the
+	// commands below. Panels get `repos.current` instead, pinned to the repository they opened in, and
+	// switching closes them -- see onActiveRepoChanged at the bottom.
+	const repos = new Repositories(workspaceFolder, context.workspaceState, message => output.appendLine(message));
+	const gitService = repos.live;
 
 	// Every git action that's more than a click away from done: behind a progress notification, logged
 	// to the output channel, and on failure, a short error (see OperationRunner). The History tab
 	// reloads after each one that succeeds.
 	const runner = new OperationRunner(gitService, output, () => BranchHistoryPanel.refreshIfOpen());
 	const runGitOperation = runner.run.bind(runner);
-	const dependencyCheck = new DependencyCheck(gitService);
+	const dependencyCheck = new DependencyCheck(() => repos.current);
 	const checkDependencies = () =>
 		void dependencyCheck.check().catch(err => {
 			if (!/not a git repository/.test((err as Error).message)) {
@@ -100,9 +108,15 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.executeCommand('ggit.commit')
 	);
 
+	// Switching goes through switchRepository, defined at the bottom -- only reachable from the
+	// dropdown once activate() is done.
+	const repoPicker = new RepoPickerViewProvider(repos, root => void switchRepository(root));
+
 	const activeBranchDecorations = new ActiveBranchDecorationProvider();
 	const workingChangeDecorations = new WorkingChangeDecorationProvider();
-	const showContentProvider = new GGitShowContentProvider(gitService);
+	const showContentProvider = new GGitShowContentProvider(root =>
+		root === undefined ? repos.current : repos.serviceForListed(root)
+	);
 
 	const workingCopyView = vscode.window.createTreeView('ggitWorkingCopy', {
 		treeDataProvider: workingCopyProvider,
@@ -118,33 +132,36 @@ export function activate(context: vscode.ExtensionContext): void {
 		// startMerge is defined further down -- only ever called from a drop, well after activate() is done.
 		dragAndDropController: new BranchesDragAndDropController((sourceBranch, intoBranch) => void startMerge(sourceBranch, intoBranch)),
 	});
-	// The workspace folder name, mirroring how Working Copy's description shows the active branch —
-	// static for now since GGit only ever looks at a single workspace folder (see the worktree
-	// discussion: there's no "switch worktree" yet, so this never needs to change mid-session).
-	branchesView.description = workspaceFolder.name;
-
 	// Single fixed row, no multi-select/checkboxes needed -- see ConflictsTreeProvider.
 	const conflictsView = vscode.window.createTreeView('ggitConflicts', { treeDataProvider: conflictsProvider });
 
 	const remotesView = vscode.window.createTreeView('ggitRemotes', { treeDataProvider: remotesProvider });
-	// See branchesView above -- description here gets temporarily overridden by the search-filter
-	// status instead (see ggit.searchRemotes below), which falls back to this same folder name once
-	// the filter's cleared.
-	remotesView.description = workspaceFolder.name;
 
-	// Same folder-name description as the views above, except while remotes are being checked for
-	// their tags (or couldn't be reached) -- see TagsTreeProvider.
 	const tagsView = vscode.window.createTreeView('ggitTags', { treeDataProvider: tagsProvider });
-	tagsView.description = workspaceFolder.name;
 	tagsProvider.onDidChangeRemoteStatus(status => {
-		tagsView.description = status ?? workspaceFolder.name;
+		tagsView.description = status ?? repos.activeEntry.name;
 	});
 	tagsProvider.onDidChangeRemoteTags(names => BranchHistoryPanel.setRemoteTags(names));
 
 	// Multi-select is for bulk delete only — Apply always acts on just the row you right-clicked,
 	// ignoring the rest of the selection (see ggit.applyStashItem below).
 	const stashesView = vscode.window.createTreeView('ggitStashes', { treeDataProvider: stashesProvider, canSelectMany: true });
-	stashesView.description = workspaceFolder.name;
+
+	// The active repository's folder name, mirroring how Working Copy's description shows it with the
+	// active branch (see updateActiveBranchLabel). Remotes shows its search filter instead while one is
+	// set (see ggit.searchRemotes), and Tags its remote check while that runs (see TagsTreeProvider).
+	const remotesFilterLabel = () => {
+		const filter = remotesProvider.filter.trim();
+		return filter ? `Filter: "${filter}"` : repos.activeEntry.name;
+	};
+	const updateRepoDescriptions = () => {
+		const name = repos.activeEntry.name;
+		branchesView.description = name;
+		remotesView.description = remotesFilterLabel();
+		tagsView.description = name;
+		stashesView.description = name;
+	};
+	updateRepoDescriptions();
 
 	// Mirrors the built-in Source Control icon's badge — VS Code aggregates a view's `badge` up onto
 	// its container's activity-bar icon automatically, so setting this on just the Working Copy view
@@ -166,9 +183,11 @@ export function activate(context: vscode.ExtensionContext): void {
 	// "GGit"), and TreeView.description is explicitly documented as safe to update dynamically, so the
 	// repo folder name (what "GGit - <folder>" would've shown, if that were possible) and the active
 	// branch both go there instead, folder first since that's the more stable/identifying of the two.
+	// With several repositories in the folder, it's the active one's name.
 	const updateActiveBranchLabel = async () => {
 		const current = await unlessNotARepo(gitService.getCurrentBranch(), undefined);
-		workingCopyView.description = current ? `${workspaceFolder.name} · ${current}` : workspaceFolder.name;
+		const name = repos.activeEntry.name;
+		workingCopyView.description = current ? `${name} · ${current}` : name;
 		// Recorded here rather than only around GGit's own checkout commands, so a checkout run from the
 		// integrated terminal still updates Recents -- same "pick this up regardless of source" approach
 		// already used for rebase state above. Only actually refreshes the tree again on top of whatever
@@ -201,7 +220,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			conflictsProvider.setOperation(operation);
 			conflictsProvider.refresh();
 			if (!activeConflictOperation) {
-				ConflictsPanel.createOrShow(context, gitService, refreshAll);
+				ConflictsPanel.createOrShow(context, repos.current, refreshAll);
 			}
 		}
 		activeConflictOperation = operation;
@@ -251,6 +270,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		CommitPanel.refreshIfOpen();
 		void commitLauncherProvider.refresh();
 		ConflictsPanel.refreshIfOpen();
+		void repoPicker.refreshActive();
 	};
 
 	// refreshAll plus re-asking each remote which tags it has -- a network call, so only after
@@ -262,7 +282,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	const openTagDialog = (mode: TagDialogMode, node: TagNode | undefined) => {
 		if (node) {
-			TagPanel.createOrShow(context, gitService, mode, node, remoteChanged => {
+			TagPanel.createOrShow(context, repos.current, mode, node, remoteChanged => {
 				refreshAll();
 				if (remoteChanged) {
 					tagsProvider.refreshRemotes();
@@ -303,7 +323,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				BranchHistoryPanel.refreshIfOpen();
 			};
 			if (analysis.outgoing > 0) {
-				MergePanel.createOrShow(context, gitService, sourceBranch, intoBranch, analysis, onMerged);
+				MergePanel.createOrShow(context, repos.current, sourceBranch, intoBranch, analysis, onMerged);
 				return;
 			}
 			const commits = `${analysis.incoming} commit${analysis.incoming === 1 ? '' : 's'}`;
@@ -319,7 +339,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (choice === 'Merge') {
 				await runGitOperation(`Merging ${sourceBranch} into ${intoBranch}…`, () => gitService.fastForwardTo(sourceBranch), refreshAll);
 			} else if (choice === 'Merge Options…') {
-				MergePanel.createOrShow(context, gitService, sourceBranch, intoBranch, analysis, onMerged);
+				MergePanel.createOrShow(context, repos.current, sourceBranch, intoBranch, analysis, onMerged);
 			}
 		} catch (err) {
 			vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
@@ -328,7 +348,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	const openRebaseTab = async (onto?: string) => {
 		try {
-			await RebasePanel.createOrShow(context, gitService, () => {
+			await RebasePanel.createOrShow(context, repos.current, () => {
 				refreshAll();
 				BranchHistoryPanel.refreshIfOpen();
 			}, onto);
@@ -389,12 +409,8 @@ export function activate(context: vscode.ExtensionContext): void {
 		refreshAll();
 	});
 
-	void updateWorkingCopyBadge();
-	void updateRepoContext();
-	void updateConflictContext();
-	void updateActiveBranchLabel();
-	// Records where HEAD starts, so the first move after activation has something to compare against.
-	checkDependencies();
+	// The first refresh (badge, repo/conflict state, branch label, and where HEAD starts for the
+	// dependency check) waits for the first look for repositories -- see applyActiveRepo at the bottom.
 
 	context.subscriptions.push(
 		workingCopyView,
@@ -402,6 +418,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		remotesView,
 		tagsView,
 		conflictsView,
+		vscode.window.registerWebviewViewProvider('ggitRepository', repoPicker),
 		vscode.window.registerWebviewViewProvider('ggitCommitLauncher', commitLauncherProvider),
 		stashesView,
 		vscode.workspace.registerTextDocumentContentProvider(GGIT_SHOW_SCHEME, showContentProvider),
@@ -409,11 +426,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.window.registerFileDecorationProvider(workingChangeDecorations),
 
 		vscode.commands.registerCommand('ggit.openBranchHistory', (branchName: string) => {
-			BranchHistoryPanel.createOrShow(context, gitService, branchName);
+			BranchHistoryPanel.createOrShow(context, repos.current, branchName);
 		}),
 
 		vscode.commands.registerCommand('ggit.branchClicked', (branchName: string) => {
-			BranchHistoryPanel.createOrShow(context, gitService, branchName);
+			BranchHistoryPanel.createOrShow(context, repos.current, branchName);
 			if (isLocalBranchDoubleClick(branchName)) {
 				void runGitOperation(`Switching to ${branchName}…`, () => gitService.checkoutBranch(branchName), refreshAll);
 			}
@@ -429,8 +446,28 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 
+		// Also looks again for repositories in the folder, should the watcher on it have missed one.
 		vscode.commands.registerCommand('ggit.refresh', () => {
 			refreshAll();
+			void rescanRepos();
+		}),
+
+		// The Repository dropdown's list, as a quick pick -- for the keyboard, or with the dropdown hidden.
+		vscode.commands.registerCommand('ggit.switchRepository', async () => {
+			const active = repos.activeEntry.root;
+			const pick = await vscode.window.showQuickPick(
+				repos.entries.map(entry => ({
+					label: entry.root === active ? `$(check) ${entry.name}` : entry.name,
+					description: [entry.relative === '' ? 'root' : undefined, repoPicker.describe(entry) || undefined]
+						.filter(Boolean)
+						.join(' · '),
+					root: entry.root,
+				})),
+				{ placeHolder: 'Repository for GGit to show' }
+			);
+			if (pick) {
+				await switchRepository(pick.root);
+			}
 		}),
 
 		// Both offered from Working Copy's welcome content while the folder isn't a repo (see updateRepoContext).
@@ -442,9 +479,9 @@ export function activate(context: vscode.ExtensionContext): void {
 			)
 		),
 
-		// GGit only ever shows the folder VS Code has open, so a repo made in a subfolder stays invisible
-		// here until that folder's opened -- hence offering to open it, like the built-in Git extension
-		// does after initializing a folder outside the workspace.
+		// A repository directly inside the opened folder joins the Repository dropdown, so GGit switches to
+		// it. One deeper isn't looked for (see Repositories), so for that GGit offers to open the folder
+		// instead, like the built-in Git extension does after initializing a folder outside the workspace.
 		vscode.commands.registerCommand('ggit.initRepoInSubfolder', async () => {
 			const root = workspaceFolder.uri.fsPath;
 			const name = (
@@ -471,6 +508,13 @@ export function activate(context: vscode.ExtensionContext): void {
 				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
 				return;
 			}
+			await rescanRepos();
+			const created = repos.entries.find(e => path.relative(e.root, dir.fsPath) === '');
+			if (created) {
+				await switchRepository(created.root);
+				void vscode.window.showInformationMessage(`GGit: Created a repository in "${name}".`);
+				return;
+			}
 			const choice = await vscode.window.showInformationMessage(
 				`Created a repository in "${name}". Open it?`,
 				{ modal: true, detail: `GGit works on the folder VS Code has open, so open ${name} to use it here.` },
@@ -492,15 +536,14 @@ export function activate(context: vscode.ExtensionContext): void {
 			inputBox.value = remotesProvider.filter;
 			inputBox.onDidChangeValue(value => {
 				remotesProvider.setFilter(value);
-				const trimmed = value.trim();
-				remotesView.description = trimmed ? `Filter: "${trimmed}"` : workspaceFolder.name;
+				remotesView.description = remotesFilterLabel();
 			});
 			inputBox.onDidHide(() => inputBox.dispose());
 			inputBox.show();
 		}),
 
 		vscode.commands.registerCommand('ggit.addRemote', () => {
-			RemotePanel.createOrShow(context, gitService, refreshAll);
+			RemotePanel.createOrShow(context, repos.current, refreshAll);
 		}),
 
 		// Same remote-row guard as ggit.removeRemote below. A rename or new URL changes what the Tags
@@ -511,7 +554,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			try {
 				const urls = await gitService.getRemoteUrls(node.name);
-				RemotePanel.createOrShow(context, gitService, refreshAllAndRemoteTags, { name: node.name, ...urls });
+				RemotePanel.createOrShow(context, repos.current, refreshAllAndRemoteTags, { name: node.name, ...urls });
 			} catch (err) {
 				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
 			}
@@ -640,7 +683,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		// `startPoint` only comes from the History tab -- whichever branch it's showing (see
 		// branchHistoryPanel.ts's 'runAction' handling); otherwise the form starts from the checked-out one.
 		vscode.commands.registerCommand('ggit.createBranch', (startPoint?: string) => {
-			CreateBranchPanel.createOrShow(context, gitService, refreshAll, startPoint);
+			CreateBranchPanel.createOrShow(context, repos.current, refreshAll, startPoint);
 		}),
 
 		vscode.commands.registerCommand('ggit.setPinnedBranchCount', async () => {
@@ -827,7 +870,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		// The sidebar Conflicts view's only row -- opens (or refocuses) the Conflicts tab, where resolving
 		// actually happens. See conflictsTreeProvider.ts and conflictsPanel.ts.
 		vscode.commands.registerCommand('ggit.openConflictsTab', () => {
-			ConflictsPanel.createOrShow(context, gitService, refreshAll);
+			ConflictsPanel.createOrShow(context, repos.current, refreshAll);
 		}),
 
 		vscode.commands.registerCommand('ggit.openWorkingChangeDiff', async (file: WorkingChangeFile) => {
@@ -875,10 +918,10 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 
 		vscode.commands.registerCommand('ggit.commit', () => {
-			CommitPanel.createOrShow(context, gitService, refreshAll, async () => {
+			CommitPanel.createOrShow(context, repos.current, refreshAll, async () => {
 				const branch = await gitService.getCurrentBranch();
 				if (branch) {
-					BranchHistoryPanel.createOrShow(context, gitService, branch);
+					BranchHistoryPanel.createOrShow(context, repos.current, branch);
 				}
 			});
 		}),
@@ -1052,7 +1095,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			const branch = (await gitService.getCurrentBranch()) ?? 'HEAD';
-			BranchHistoryPanel.createOrShow(context, gitService, branch, file.path);
+			BranchHistoryPanel.createOrShow(context, repos.current, branch, file.path);
 		}),
 
 		vscode.commands.registerCommand('ggit.copyRelativePath', (node: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
@@ -1113,14 +1156,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		vscode.commands.registerCommand('ggit.createBranchFrom', (node: BranchTreeNode<BranchInfo>) => {
 			if (node.kind === 'leaf') {
-				CreateBranchPanel.createOrShow(context, gitService, refreshAll, node.item.name);
+				CreateBranchPanel.createOrShow(context, repos.current, refreshAll, node.item.name);
 			}
 		}),
 
 		// Tags the branch's tip, not HEAD -- the right-clicked branch needn't be the checked-out one.
 		vscode.commands.registerCommand('ggit.createTagFrom', (node?: BranchTreeNode<BranchInfo>) => {
 			if (node?.kind === 'leaf') {
-				CreateTagPanel.createOrShow(context, gitService, node.item.name, refreshAll);
+				CreateTagPanel.createOrShow(context, repos.current, node.item.name, refreshAll);
 			}
 		}),
 
@@ -1162,7 +1205,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		// A tag's history, same as a branch's -- the tagged commit first, then everything older.
 		vscode.commands.registerCommand('ggit.tagClicked', (tagName: string) => {
-			BranchHistoryPanel.createOrShow(context, gitService, tagName);
+			BranchHistoryPanel.createOrShow(context, repos.current, tagName);
 		}),
 
 		// Download-only on purpose: unlike remote branches, git keeps no separate copy of a remote's tags,
@@ -1215,7 +1258,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('ggit.stashClicked', async (stash: StashInfo) => {
 			try {
 				const files = await gitService.getStashFiles(stash.hash);
-				CommitFilesPanel.showForCommit(context, gitService, stash.hash, stash.message, files, -1);
+				CommitFilesPanel.showForCommit(context, repos.current, stash.hash, stash.message, files, -1);
 			} catch (err) {
 				vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
 			}
@@ -1256,25 +1299,21 @@ export function activate(context: vscode.ExtensionContext): void {
 	);
 
 	// Keep the trees (and any open history tab) in sync with out-of-band changes, e.g. a branch checkout
-	// or fetch run from the integrated terminal.
-	const gitDirPattern = new vscode.RelativePattern(
-		vscode.Uri.joinPath(workspaceFolder.uri, '.git'),
-		// rebase-merge/rebase-apply are the directories git creates for the duration of an
-		// in-progress rebase (conflicted or not) — watching them is what lets the Conflicts view
-		// and its `ggit.rebaseInProgress` context key react promptly to a rebase starting, pausing
-		// on a conflict, or finishing/aborting, including one driven from the integrated terminal.
-		// MERGE_HEAD does the same for a stopped merge (`ggit.mergeInProgress`), and CHERRY_PICK_HEAD /
-		// REVERT_HEAD for a stopped cherry-pick or revert (`ggit.pickInProgress`).
-		// worktrees/** is git's per-linked-worktree admin dir — a subdirectory appears/disappears
-		// on `git worktree add`/`remove`, and each one's own HEAD file changes when that worktree
-		// switches branches, which is exactly the state Branches' blue/"checked out elsewhere"
-		// styling depends on. This only sees other worktrees because GGit's own workspace folder is
-		// always the *main* checkout today (no worktree-switching UI yet) — its .git is the real,
-		// shared git dir, not a per-worktree pointer file. If GGit ever opens from inside a linked
-		// worktree instead, this would need to watch the resolved git-common-dir rather than a
-		// hardcoded ".git" under the workspace folder.
-		'{HEAD,MERGE_HEAD,CHERRY_PICK_HEAD,REVERT_HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}'
-	);
+	// or fetch run from the integrated terminal. Watched in the active repository's git dir, which
+	// resolveGitDir finds even when .git is a pointer file (a submodule, or a linked worktree).
+	// rebase-merge/rebase-apply are the directories git creates for the duration of an
+	// in-progress rebase (conflicted or not) — watching them is what lets the Conflicts view
+	// and its `ggit.rebaseInProgress` context key react promptly to a rebase starting, pausing
+	// on a conflict, or finishing/aborting, including one driven from the integrated terminal.
+	// MERGE_HEAD does the same for a stopped merge (`ggit.mergeInProgress`), and CHERRY_PICK_HEAD /
+	// REVERT_HEAD for a stopped cherry-pick or revert (`ggit.pickInProgress`).
+	// worktrees/** is git's per-linked-worktree admin dir — a subdirectory appears/disappears
+	// on `git worktree add`/`remove`, and each one's own HEAD file changes when that worktree
+	// switches branches, which is exactly the state Branches' blue/"checked out elsewhere"
+	// styling depends on. For a repository that is itself a linked worktree, resolveGitDir returns
+	// the shared git dir, so its own HEAD and index are among those worktrees/** files too.
+	const GIT_DIR_FILES =
+		'{HEAD,MERGE_HEAD,CHERRY_PICK_HEAD,REVERT_HEAD,refs/**,packed-refs,index,rebase-merge/**,rebase-apply/**,worktrees/**}';
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 	// Logged unconditionally (not just on a cache-miss) so a silent watcher -- e.g. `files.watcherExclude`
 	// quietly excluding `.git` in a config tuned for a huge repo -- shows up as "GGit: activated" in the
@@ -1288,25 +1327,30 @@ export function activate(context: vscode.ExtensionContext): void {
 			BranchHistoryPanel.refreshIfOpen();
 		}, 300);
 	};
-	// Also re-run by updateRepoContext each time a folder that wasn't a repo becomes one: in a real VS
-	// Code test, a watcher created before .git existed never reported anything inside it afterwards,
-	// not even that .git being deleted again.
+	// Created for each repository made active (see applyActiveRepo), and re-run by updateRepoContext
+	// each time a folder that wasn't a repo becomes one: in a real VS Code test, a watcher created
+	// before .git existed never reported anything inside it afterwards, not even that .git being
+	// deleted again.
 	let gitDirWatcher: vscode.FileSystemWatcher | undefined;
 	const watchGitDir = () => {
 		gitDirWatcher?.dispose();
-		gitDirWatcher = vscode.workspace.createFileSystemWatcher(gitDirPattern);
+		gitDirWatcher = vscode.workspace.createFileSystemWatcher(
+			new vscode.RelativePattern(vscode.Uri.file(resolveGitDir(gitService.repoRoot)), GIT_DIR_FILES)
+		);
 		gitDirWatcher.onDidChange(onGitDirChange);
 		gitDirWatcher.onDidCreate(onGitDirChange);
 		gitDirWatcher.onDidDelete(onGitDirChange);
 	};
-	watchGitDir();
 	context.subscriptions.push({ dispose: () => gitDirWatcher?.dispose() });
 
 	// Editing or deleting a tracked file never touches anything under .git, so the watcher above
 	// can't see it — this is what actually keeps Working Copy's status/badges in sync with a plain
-	// Cmd+S or an Explorer delete. getWorkspaceFolder (rather than a manual fsPath.startsWith check)
-	// is what VS Code itself uses to answer "is this URI inside a workspace folder", so it's immune
-	// to the trailing-slash/symlink mismatches a string-prefix check can silently get wrong.
+	// Cmd+S or an Explorer delete. getWorkspaceFolder is what VS Code itself uses to answer "is this
+	// URI inside a workspace folder", so it's immune to the trailing-slash/symlink mismatches a
+	// string-prefix check can silently get wrong; isInsideFolder then narrows that to the active
+	// repository when it's one inside the opened folder.
+	const isInActiveRepo = (uri: vscode.Uri) =>
+		vscode.workspace.getWorkspaceFolder(uri) !== undefined && isInsideFolder(gitService.repoRoot, uri.fsPath);
 	const refreshWorkingCopy = (reason: string) => {
 		output.appendLine(`refreshWorkingCopy: ${reason}`);
 		workingCopyProvider.refresh();
@@ -1320,12 +1364,12 @@ export function activate(context: vscode.ExtensionContext): void {
 	};
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument(doc => {
-			if (vscode.workspace.getWorkspaceFolder(doc.uri)) {
+			if (isInActiveRepo(doc.uri)) {
 				refreshWorkingCopy(`saved ${doc.uri.fsPath}`);
 			}
 		}),
 		vscode.workspace.onDidDeleteFiles(e => {
-			if (e.files.some(uri => vscode.workspace.getWorkspaceFolder(uri))) {
+			if (e.files.some(isInActiveRepo)) {
 				refreshWorkingCopy(`deleted ${e.files.map(f => f.fsPath).join(', ')}`);
 			}
 		})
@@ -1344,8 +1388,9 @@ export function activate(context: vscode.ExtensionContext): void {
 	// the full branches/remotes/stashes refreshAll. files.watcherExclude doesn't cover .gitignore,
 	// though -- a test run streaming into an ignored logs/ dir fired this on every write and kept a
 	// `git status` going nonstop -- so each debounced batch is checked against .gitignore first and
-	// dropped if nothing in it could actually show up in Working Copy.
-	const workingTreeWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceFolder, '**/*'));
+	// dropped if nothing in it could actually show up in Working Copy. Scoped to the active
+	// repository (see watchWorkingTree), so a repository beside it in the folder doesn't trigger it.
+	let workingTreeWatcher: vscode.FileSystemWatcher | undefined;
 	let workingTreeDebounce: ReturnType<typeof setTimeout> | undefined;
 	const pendingWorkingTreeChanges = new Set<string>();
 	const flushWorkingTreeChanges = async () => {
@@ -1375,10 +1420,136 @@ export function activate(context: vscode.ExtensionContext): void {
 		clearTimeout(workingTreeDebounce);
 		workingTreeDebounce = setTimeout(() => void flushWorkingTreeChanges(), 500);
 	};
-	workingTreeWatcher.onDidChange(onWorkingTreeChange);
-	workingTreeWatcher.onDidCreate(onWorkingTreeChange);
-	workingTreeWatcher.onDidDelete(onWorkingTreeChange);
-	context.subscriptions.push(workingTreeWatcher);
+	const watchWorkingTree = () => {
+		workingTreeWatcher?.dispose();
+		clearTimeout(workingTreeDebounce);
+		pendingWorkingTreeChanges.clear();
+		const entry = repos.activeEntry;
+		const base = entry.relative === '' ? workspaceFolder : vscode.Uri.file(entry.root);
+		workingTreeWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(base, '**/*'));
+		workingTreeWatcher.onDidChange(onWorkingTreeChange);
+		workingTreeWatcher.onDidCreate(onWorkingTreeChange);
+		workingTreeWatcher.onDidDelete(onWorkingTreeChange);
+	};
+	context.subscriptions.push({ dispose: () => workingTreeWatcher?.dispose() });
+
+	// ---- Switching repositories (the Repository dropdown, see RepoPickerViewProvider) ----
+
+	// Each of these tabs belongs to the repository it opened in, so a switch closes them all.
+	const repoPanels = [
+		BranchHistoryPanel,
+		CommitFilesPanel,
+		CommitPanel,
+		ConflictsPanel,
+		CreateBranchPanel,
+		CreateTagPanel,
+		MergePanel,
+		RebasePanel,
+		RemotePanel,
+		TagPanel,
+	];
+
+	/** Points the watchers, the views' headers and the per-repository state at the active repository,
+	 * then refreshes everything: once the first look for repositories is done, and after each switch. */
+	const applyActiveRepo = () => {
+		const entry = repos.activeEntry;
+		output.appendLine(`active repository: ${entry.root}`);
+		recentBranches.setScope(entry.relative);
+		// So a repository with a rebase or merge stopped opens its Conflicts tab, as at startup.
+		activeConflictOperation = undefined;
+		watchGitDir();
+		watchWorkingTree();
+		updateRepoDescriptions();
+		void vscode.commands.executeCommand('setContext', 'ggit.multiRepo', repos.isMultiRepo);
+		repoPicker.update();
+		tagsProvider.resetRemotes();
+		refreshAll();
+	};
+
+	const onActiveRepoChanged = async () => {
+		const historyWasOpen = BranchHistoryPanel.isOpen();
+		repoPanels.forEach(panel => panel.close());
+		applyActiveRepo();
+		// History reopens on the new repository's checked-out branch, rather than just vanishing.
+		const git = repos.current;
+		if (historyWasOpen && (await git.getHeadSha().catch(() => undefined))) {
+			const branch = await git.getCurrentBranch().catch(() => undefined);
+			BranchHistoryPanel.createOrShow(context, git, branch ?? 'HEAD');
+		}
+	};
+
+	/** The dropdown's pick, and Switch Repository's. Refused while a GGit operation is running, since
+	 * its remaining steps would run in the newly active repository. While a git command that changes
+	 * something is running in this one (a commit's hooks, a rebase), asks first: the command carries
+	 * on in its own repository either way, but its tab closes. */
+	const switchRepository = async (root: string) => {
+		const target = repos.entries.find(e => e.root === root);
+		const from = repos.activeEntry;
+		if (!target || target.root === from.root) {
+			repoPicker.update();
+			return;
+		}
+		const operation = runner.busyWith;
+		if (operation) {
+			repoPicker.update();
+			void vscode.window.showWarningMessage(`GGit: Wait for "${operation.replace(/…$/, '')}" to finish before switching repositories.`);
+			return;
+		}
+		const command = repos.current.busyWith;
+		if (command) {
+			const SWITCH = 'Switch Anyway';
+			const choice = await vscode.window.showWarningMessage(
+				`git ${command} is still running in ${from.name}.`,
+				{
+					modal: true,
+					detail: `It finishes in ${from.name} either way, but switching to ${target.name} closes GGit's tabs for ${from.name}, so you won't see how it ends there. The GGit output channel still shows it.`,
+				},
+				SWITCH
+			);
+			if (choice !== SWITCH) {
+				repoPicker.update();
+				return;
+			}
+		}
+		repos.select(target.root);
+	};
+
+	/** Looks again for repositories in the folder, after something appears or disappears at its top
+	 * level, or a Refresh. A switch it causes (the active repository gone) arrives as onDidChangeActive. */
+	const rescanRepos = async () => {
+		if (await repos.discover()) {
+			void vscode.commands.executeCommand('setContext', 'ggit.multiRepo', repos.isMultiRepo);
+			repoPicker.update();
+			void repoPicker.refreshSummaries(true);
+		}
+	};
+
+	// A repository cloned into or deleted from the folder, or the folder itself initialized or
+	// un-initialized: anything created or deleted at the top level, or a .git directly inside it.
+	// Deleting a whole folder can arrive as that folder's deletion alone, hence the top-level `*`.
+	// A rescan is one directory listing, so there's no need to be choosier.
+	const repoListWatcher = vscode.workspace.createFileSystemWatcher(
+		new vscode.RelativePattern(workspaceFolder, '{*,*/.git}'),
+		false,
+		true,
+		false
+	);
+	let rescanDebounce: ReturnType<typeof setTimeout> | undefined;
+	const scheduleRescan = () => {
+		clearTimeout(rescanDebounce);
+		rescanDebounce = setTimeout(() => void rescanRepos(), 500);
+	};
+	repoListWatcher.onDidCreate(scheduleRescan);
+	repoListWatcher.onDidDelete(scheduleRescan);
+	context.subscriptions.push(repoListWatcher);
+
+	void repos
+		.discover()
+		.catch(err => output.appendLine(`repositories: couldn't look for them: ${(err as Error).message}`))
+		.finally(() => {
+			applyActiveRepo();
+			context.subscriptions.push(repos.onDidChangeActive(() => void onActiveRepoChanged()));
+		});
 }
 
 /** Normalizes a Working Copy context-menu invocation into just the real files, dropping the pinned

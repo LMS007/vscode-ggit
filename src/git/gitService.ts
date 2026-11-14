@@ -107,15 +107,26 @@ export class GitService {
 		}
 		if (LOGGED_VERBS.has(verb)) {
 			const started = Date.now();
+			this.runningVerbs.push(verb);
 			let open = 2;
 			const onClose = () => {
 				if (--open === 0) {
+					this.runningVerbs.splice(this.runningVerbs.indexOf(verb), 1);
 					this.logger?.(`[git] ${describeGitArgs(args)} (${formatDuration(Date.now() - started)})`);
 				}
 			};
 			stdout.once('close', onClose);
 			stderr.once('close', onClose);
 		}
+	}
+
+	/** The LOGGED_VERBS commands still running in this repo, oldest first. */
+	private readonly runningVerbs: string[] = [];
+
+	/** A command that changes something or talks to a remote (a commit, a push, a rebase...) still
+	 * running in this repo, if any. Switching repositories asks first while one is (see extension.ts). */
+	get busyWith(): string | undefined {
+		return this.runningVerbs[0];
 	}
 
 	private readonly outputWatchers = new Set<{ verbs: ReadonlySet<string>; onOutput: (text: string) => void }>();
@@ -1337,6 +1348,17 @@ export class GitService {
 			this.logger?.(`allIgnored: check-ignore failed, treating as not ignored: ${err}`);
 			return false;
 		}
+	}
+
+	/** The checked-out branch and how many files have changes, for the Repository dropdown's label for
+	 * this repo. Counted like the Working Copy badge (distinct paths), but without getWorkingChanges'
+	 * per-row logging, since this runs for every repository in the folder at once. */
+	async getSummary(): Promise<{ branch: string | undefined; changes: number }> {
+		const status = await this.git.status();
+		return {
+			branch: status.detached ? 'detached HEAD' : (status.current ?? undefined),
+			changes: new Set(status.files.map(f => f.path)).size,
+		};
 	}
 
 	/** Combined staged + unstaged working-tree changes. Usually one entry per file, but a file with

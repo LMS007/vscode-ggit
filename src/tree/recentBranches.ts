@@ -12,14 +12,29 @@ export const MAX_PINNED_BRANCH_COUNT = 30;
  * shared across unrelated repos opened in other windows). Persisted history is always kept up to the
  * hard ceiling (MAX_PINNED_BRANCH_COUNT) regardless of the user's current pin count -- only *display*
  * (see BranchesTreeProvider) is capped to that -- so turning the count back up after lowering it
- * immediately surfaces branches it already knew about, rather than needing them re-visited first. */
+ * immediately surfaces branches it already knew about, rather than needing them re-visited first.
+ * Kept per repository when the opened folder holds several (see setScope); the pin count is shared. */
 export class RecentBranches {
 	private lastKnownCurrent: string | undefined;
+	private scope = '';
 
 	constructor(private readonly workspaceState: vscode.Memento) {}
 
+	/** Which repository's list to use: its path relative to the opened folder (see RepoEntry). The
+	 * folder itself ('') keeps the original key, so a list recorded before multi-repo support stays. */
+	setScope(relative: string): void {
+		if (relative !== this.scope) {
+			this.scope = relative;
+			this.lastKnownCurrent = undefined;
+		}
+	}
+
+	private get key(): string {
+		return this.scope ? `${RECENT_BRANCHES_KEY}:${this.scope}` : RECENT_BRANCHES_KEY;
+	}
+
 	get(): string[] {
-		return this.workspaceState.get<string[]>(RECENT_BRANCHES_KEY, []);
+		return this.workspaceState.get<string[]>(this.key, []);
 	}
 
 	/** How many of `get()`'s branches the Branches view actually pins at the top -- set via the
@@ -42,7 +57,7 @@ export class RecentBranches {
 		}
 		this.lastKnownCurrent = current;
 		const existing = this.get().filter(name => name !== current);
-		await this.workspaceState.update(RECENT_BRANCHES_KEY, [current, ...existing].slice(0, MAX_PINNED_BRANCH_COUNT));
+		await this.workspaceState.update(this.key, [current, ...existing].slice(0, MAX_PINNED_BRANCH_COUNT));
 		return true;
 	}
 }

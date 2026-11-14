@@ -15,20 +15,30 @@ export const INDEX_REF = '__ggit_index__';
  * another extension) can't smuggle an option such as `--output=` in through the ref slot. */
 const SAFE_REF = /^(?:HEAD|[0-9a-f]{4,64})$/;
 
-export function toGGitShowUri(relPath: string, ref: string): vscode.Uri {
+/** `repoRoot` says which repository the content comes from -- with several in the opened folder, a
+ * diff stays on its own repo's content after GGit switches to another one. */
+export function toGGitShowUri(relPath: string, ref: string, repoRoot: string): vscode.Uri {
 	const normalized = relPath.startsWith('/') ? relPath : `/${relPath}`;
 	return vscode.Uri.from({
 		scheme: GGIT_SHOW_SCHEME,
 		path: normalized,
-		query: `ref=${encodeURIComponent(ref)}`,
+		query: `ref=${encodeURIComponent(ref)}&repo=${encodeURIComponent(repoRoot)}`,
 	});
+}
+
+/** The repository a ggit-show URI reads from. Undefined for one made before URIs carried it (an
+ * editor restored from an older session), which reads from the active repository. */
+export function ggitShowRepo(uri: vscode.Uri): string | undefined {
+	return new URLSearchParams(uri.query).get('repo') ?? undefined;
 }
 
 export class GGitShowContentProvider implements vscode.TextDocumentContentProvider {
 	private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri>();
 	readonly onDidChange = this._onDidChange.event;
 
-	constructor(private readonly gitService: GitService) {}
+	/** `serviceFor` maps a URI's repository to its GitService: the active one's when the URI names
+	 * none, and undefined for a path that isn't one of the repositories GGit lists. */
+	constructor(private readonly serviceFor: (repoRoot: string | undefined) => GitService | undefined) {}
 
 	/** Tells VS Code to re-fetch content for every currently-open ggit-show document (HEAD/index
 	 * views). This was never called anywhere before, which is why an already-open diff went stale
@@ -52,10 +62,14 @@ export class GGitShowContentProvider implements vscode.TextDocumentContentProvid
 		if (ref !== INDEX_REF && !SAFE_REF.test(ref)) {
 			return '';
 		}
+		const gitService = this.serviceFor(ggitShowRepo(uri));
+		if (!gitService) {
+			return '';
+		}
 		const relPath = uri.path.replace(/^\//, '');
 		const revision = ref === INDEX_REF ? '' : ref;
 		try {
-			return await this.gitService.getFileContentAtRevision(revision, relPath);
+			return await gitService.getFileContentAtRevision(revision, relPath);
 		} catch {
 			// Path didn't exist at this revision — treat as an empty side of the diff.
 			return '';

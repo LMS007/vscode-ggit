@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "1.9.3",
+  "version": "2.0.0",
   "publisher": "kylekeating",
   "repository": {
     "type": "git",
@@ -35,6 +35,13 @@
     },
     "views": {
       "ggit": [
+        {
+          "id": "ggitRepository",
+          "name": "Repository",
+          "type": "webview",
+          "when": "ggit.multiRepo",
+          "initialSize": 1
+        },
         {
           "id": "ggitConflicts",
           "name": "Conflicts",
@@ -190,6 +197,11 @@
         "command": "ggit.refresh",
         "title": "GGit: Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "ggit.switchRepository",
+        "title": "GGit: Switch Repository…",
+        "icon": "$(repo)"
       },
       {
         "command": "ggit.workingCopyViewAsTree",
@@ -671,6 +683,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "ggit.switchRepository",
+          "when": "ggit.multiRepo"
+        },
         {
           "command": "ggit.deleteRemoteBranch",
           "when": "false"
