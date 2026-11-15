@@ -59,6 +59,35 @@ export interface WorkingChangeFile {
 	path: string;
 	status: FileStatus;
 	state: WorkingChangeState;
+	/** Set when the path is a repository of its own rather than a file. See NestedRepoInfo. */
+	nested?: NestedRepoInfo;
+}
+
+/** A repository inside the one Working Copy shows. git never lists the files inside one: the outer
+ * repository sees it as a single path, recorded (when it's tracked at all) as one commit. */
+export interface NestedRepoInfo {
+	/** 'submodule': the index records it as a commit (a gitlink), whether or not .gitmodules lists it.
+	 * 'untracked': a repository the outer one doesn't track. Staging it with `git add` would record
+	 * it as a bare commit with no .gitmodules entry, which clones can't fetch, so GGit never does. */
+	kind: 'submodule' | 'untracked';
+	/** Submodules only: whether .gitmodules lists it, which is what tells a clone where to get it. */
+	registered?: boolean;
+	/** Unstaged submodule rows only: checked out at a different commit than the index records. */
+	newCommits?: boolean;
+	/** Unstaged submodule rows only: uncommitted changes to files it tracks. */
+	modified?: boolean;
+	/** Unstaged submodule rows only: files it doesn't track yet. */
+	untracked?: boolean;
+}
+
+/** Whether a Working Copy row's checkbox can do anything. A submodule row stages the commit it's
+ * checked out at, so one that's only got uncommitted work inside has nothing to stage until that
+ * work is committed in the submodule itself. An untracked repository can't be staged at all. */
+export function isStageable(file: WorkingChangeFile): boolean {
+	if (!file.nested) {
+		return true;
+	}
+	return file.nested.kind === 'submodule' && (file.state === 'staged' || file.nested.newCommits === true || file.status !== 'M');
 }
 
 /** A path git has flagged as having an unresolved merge conflict — mid-rebase, mid-merge, etc. Kept

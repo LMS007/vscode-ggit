@@ -10,16 +10,20 @@ const ACTIVE_REPO_KEY = 'ggit.activeRepository';
 export interface RepoEntry {
 	/** Absolute path; where git runs. */
 	readonly root: string;
-	/** The folder's name, as the Repository dropdown and the views' headers show it. */
+	/** What the Repository dropdown and the views' headers call it: the folder's own name for the
+	 * opened folder, otherwise its path from there ("Atlas", "tools/lzham_codec"). */
 	readonly name: string;
 	/** Relative to the opened folder, '' for the folder itself. What's remembered between sessions. */
 	readonly relative: string;
 }
 
 /** The repositories in the opened folder, and which one GGit is showing. That's the folder itself when
- * it's a repository, plus every repository directly inside it: one level down only, which covers a
- * folder of checkouts, or a superproject and its submodules, without crawling whole trees. When
- * nothing is found, the folder itself is the only entry, so Working Copy offers to initialize it. */
+ * it's a repository, plus every repository directly inside it, which covers a folder of checkouts.
+ * Deeper ones are listed only when the folder's own repository already knows about them, so nothing
+ * crawls whole trees: its submodules (from .gitmodules), and the repositories inside it that it
+ * doesn't track (from git's own untracked and ignored listings). Those are what show up as rows in
+ * its Working Copy, and clicking one switches here. When nothing is found, the folder itself is the
+ * only entry, so Working Copy offers to initialize it. */
 export class Repositories {
 	private readonly services = new Map<string, GitService>();
 	private readonly folderEntry: RepoEntry;
@@ -98,13 +102,14 @@ export class Repositories {
 	}
 
 	private async discoverNow(): Promise<boolean> {
+		const folderService = this.serviceFor(this.folderEntry.root);
 		const [folderIsRepo, children] = await Promise.all([
-			this.serviceFor(this.folderEntry.root)
-				.isGitRepository()
-				.catch(() => false),
+			folderService.isGitRepository().catch(() => false),
 			findChildRepos(this.folderEntry.root),
 		]);
-		const list = folderIsRepo || children.length === 0 ? [this.folderEntry, ...children] : children;
+		const nested = folderIsRepo ? await findNestedRepos(folderService, this.logger) : [];
+		const inside = sortEntries(dedupeEntries([...children, ...nested]));
+		const list = folderIsRepo || inside.length === 0 ? [this.folderEntry, ...inside] : inside;
 		const changed = list.length !== this.list.length || list.some((e, i) => e.root !== this.list[i].root);
 		if (changed) {
 			this.logger(`repositories: ${list.map(e => e.relative || `${e.name} (opened folder)`).join(', ')}`);
@@ -161,7 +166,7 @@ export function isInsideFolder(folder: string, target: string): boolean {
 }
 
 /** The folders directly inside `folder` that hold a repository: a .git directory, or the .git file a
- * submodule or linked worktree has instead. Sorted by name, ignoring case. */
+ * submodule or linked worktree has instead. */
 async function findChildRepos(folder: string): Promise<RepoEntry[]> {
 	let dirents: fs.Dirent[];
 	try {
@@ -181,7 +186,51 @@ async function findChildRepos(folder: string): Promise<RepoEntry[]> {
 				return hasGit ? { root, name: d.name, relative: d.name } : undefined;
 			})
 	);
-	return found
-		.filter((e): e is RepoEntry => e !== undefined)
-		.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+	return found.filter((e): e is RepoEntry => e !== undefined);
+}
+
+/** The repositories the folder's own repository knows about, at any depth: its submodules that are
+ * checked out, and the repositories inside it that it doesn't track, ignored ones included (so one
+ * that's been ignored stays switchable). Each lookup that fails is just skipped. */
+async function findNestedRepos(folder: GitService, logger: (message: string) => void): Promise<RepoEntry[]> {
+	const lookup = <T>(what: string, run: () => Promise<T>, fallback: T): Promise<T> =>
+		run().catch(err => {
+			logger(`repositories: couldn't list ${what}: ${(err as Error).message}`);
+			return fallback;
+		});
+	const [registered, untracked, ignored] = await Promise.all([
+		lookup('submodules', () => folder.getRegisteredSubmodulePaths(), new Set<string>()),
+		lookup('untracked repositories', () => folder.getUntrackedNestedRepos(), []),
+		lookup('ignored repositories', () => folder.getIgnoredNestedRepos(), []),
+	]);
+	// A submodule that's never been checked out (`git submodule update --init`) is an empty folder.
+	const checkedOut = await Promise.all(
+		[...registered].map(async rel =>
+			fs.promises.access(path.join(folder.repoRoot, rel, '.git')).then(
+				() => rel,
+				() => undefined
+			)
+		)
+	);
+	const relatives = [...checkedOut.filter((rel): rel is string => rel !== undefined), ...untracked, ...ignored];
+	return relatives.map(rel => ({ root: path.join(folder.repoRoot, ...rel.split('/')), name: rel, relative: rel }));
+}
+
+/** Drops a repository found twice (a submodule directly inside the folder is found both ways). */
+function dedupeEntries(entries: RepoEntry[]): RepoEntry[] {
+	const seen = new Set<string>();
+	return entries.filter(entry => {
+		// Windows paths don't care about case, and .gitmodules could spell a folder differently.
+		const key = process.platform === 'win32' ? entry.root.toLowerCase() : entry.root;
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
+	});
+}
+
+/** By path, ignoring case, so tools/lzham_alpha sorts among the t's. */
+function sortEntries(entries: RepoEntry[]): RepoEntry[] {
+	return entries.sort((a, b) => a.relative.localeCompare(b.relative, undefined, { sensitivity: 'base' }));
 }

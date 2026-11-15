@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { GitService, unlessNotARepo } from '../git/gitService';
-import { WorkingChangeFile } from '../git/types';
+import { isStageable, WorkingChangeFile } from '../git/types';
 import { toCreateCommitUri, toWorkingChangeFolderUri, toWorkingChangeUri } from './workingChangeDecoration';
 
 /** Pinned above the file list — its checkbox is a check-all/uncheck-all for staging (checked only
@@ -22,6 +22,9 @@ export interface WorkingCopyFolderNode {
 	label: string;
 	children: WorkingCopyNode[];
 	allStaged: boolean;
+	/** Whether anything beneath it can be staged. A folder holding nothing but a repository GGit won't
+	 * stage (see isStageable) gets no checkbox. */
+	stageable: boolean;
 }
 
 export type WorkingCopyNode = WorkingChangeFile | CreateCommitNode | WorkingCopyFolderNode;
@@ -104,7 +107,9 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		this.splitPaths = new Set([...pathCounts].filter(([, count]) => count > 1).map(([p]) => p));
 		this.viewMode = getWorkingCopyViewMode();
 		const stagedCount = sorted.filter(f => f.state === 'staged').length;
-		const allStaged = sorted.length > 0 && sorted.every(f => f.state === 'staged');
+		// Rows without a checkbox (a repository GGit won't stage) can't hold Create Commit unchecked.
+		const stageable = sorted.filter(isStageable);
+		const allStaged = stageable.length > 0 && stageable.every(f => f.state === 'staged');
 		this.gitService.log(
 			`WorkingCopyTreeProvider.getChildren: ${sorted.length} row(s), mode=${this.viewMode}, splitPaths=${JSON.stringify([...this.splitPaths])}`
 		);
@@ -133,8 +138,10 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 			item.id = `ggit-folder:${node.path}`;
 			item.iconPath = vscode.ThemeIcon.Folder;
 			item.resourceUri = toWorkingChangeFolderUri(node.path);
-			item.checkboxState = node.allStaged ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
-			item.tooltip = `${node.path} — check to stage everything in this folder, uncheck to unstage it`;
+			if (node.stageable) {
+				item.checkboxState = node.allStaged ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
+			}
+			item.tooltip = node.stageable ? `${node.path} — check to stage everything in this folder, uncheck to unstage it` : node.path;
 			item.contextValue = 'workingChangeFolder';
 			return item;
 		}
@@ -142,6 +149,9 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		const dir = path.dirname(file.path);
 		// In tree mode the enclosing folder rows already say where the file lives.
 		const dirLabel = dir === '.' || this.viewMode === 'tree' ? undefined : dir;
+		if (file.nested) {
+			return nestedRepoItem(file, dirLabel);
+		}
 		const item = new vscode.TreeItem(path.basename(file.path), vscode.TreeItemCollapsibleState.None);
 		item.resourceUri = toWorkingChangeUri(file.path, file.status);
 		if (file.status === 'U') {
@@ -177,6 +187,78 @@ export class WorkingCopyTreeProvider implements vscode.TreeDataProvider<WorkingC
 		};
 		return item;
 	}
+}
+
+/** A repository inside the one Working Copy shows (see NestedRepoInfo): a repo icon, what's changed
+ * in it, and a checkbox only when staging does something. Clicking it switches GGit to that
+ * repository. When it has both a staged and an unstaged row, they already read differently, so they
+ * don't need the "(staged)"/"(unstaged)" suffix a file gets. */
+function nestedRepoItem(file: WorkingChangeFile, dirLabel: string | undefined): vscode.TreeItem {
+	const nested = file.nested!;
+	const item = new vscode.TreeItem(path.basename(file.path), vscode.TreeItemCollapsibleState.None);
+	item.resourceUri = toWorkingChangeUri(file.path, file.status);
+	item.iconPath = new vscode.ThemeIcon(nested.kind === 'submodule' ? 'file-submodule' : 'repo');
+	item.description = [dirLabel, describeNestedRepo(file)].filter(Boolean).join('  ');
+	if (isStageable(file)) {
+		item.checkboxState =
+			file.state === 'staged' ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
+	}
+	item.contextValue =
+		nested.kind === 'untracked'
+			? 'workingChangeNestedRepo'
+			: nested.registered
+				? 'workingChangeSubmodule'
+				: 'workingChangeSubmoduleUnregistered';
+	item.tooltip = nestedRepoTooltip(file);
+	item.command = { command: 'ggit.openNestedRepository', title: 'Switch to This Repository', arguments: [file] };
+	return item;
+}
+
+/** "new commits", "changes inside", "not a submodule"... */
+function describeNestedRepo(file: WorkingChangeFile): string {
+	const nested = file.nested!;
+	if (nested.kind === 'untracked') {
+		return 'not a submodule';
+	}
+	let what: string;
+	if (file.status === 'A') {
+		what = 'added as submodule';
+	} else if (file.status === 'D') {
+		what = 'submodule removed';
+	} else if (file.state === 'staged') {
+		what = 'new commits';
+	} else {
+		const parts = [nested.newCommits && 'new commits', nested.modified && 'changes inside', nested.untracked && 'new files inside'];
+		what = parts.filter(Boolean).join(', ') || 'changed';
+	}
+	return nested.registered ? what : `${what} · not in .gitmodules`;
+}
+
+function nestedRepoTooltip(file: WorkingChangeFile): string {
+	const nested = file.nested!;
+	const name = file.path;
+	if (nested.kind === 'untracked') {
+		return [
+			`${name} is a separate git repository that this one doesn't track. Click to switch to it.`,
+			"It has no checkbox: staging it would record a bare commit that clones of this repository can't fetch. Right-click to add it as a submodule, or to ignore it.",
+		].join('\n\n');
+	}
+	const lines: string[] = [];
+	if (file.state === 'staged') {
+		lines.push(`${name}: staged. Committing records the commit it's checked out at.`);
+	} else if (isStageable(file)) {
+		lines.push(`${name} is checked out at a different commit than this repository has recorded. Check it to record that commit.`);
+	}
+	if (file.state === 'unstaged' && (nested.modified || nested.untracked)) {
+		lines.push(`${name} has uncommitted changes. Commit them in ${name} first; this repository can then record that commit.`);
+	}
+	if (!nested.registered) {
+		lines.push(
+			"It isn't listed in .gitmodules, so clones of this repository won't know where to fetch it. Right-click → Add as Submodule… to list it."
+		);
+	}
+	lines.push('Click to switch to it.');
+	return lines.join('\n\n');
 }
 
 /** Nests path-sorted files under folder rows: folders before files at each level (like the
@@ -215,8 +297,10 @@ function buildFileTree(files: WorkingChangeFile[]): WorkingCopyNode[] {
 					child = onlyChild;
 				}
 				const children = toNodes(child, folderPath);
-				const node: WorkingCopyFolderNode = { kind: 'folder', path: folderPath, label, children, allStaged: false };
-				node.allStaged = collectWorkingChangeFiles(node).every(f => f.state === 'staged');
+				const node: WorkingCopyFolderNode = { kind: 'folder', path: folderPath, label, children, allStaged: false, stageable: false };
+				const stageable = collectWorkingChangeFiles(node).filter(isStageable);
+				node.stageable = stageable.length > 0;
+				node.allStaged = node.stageable && stageable.every(f => f.state === 'staged');
 				return node;
 			});
 		return [...folders, ...dir.files];

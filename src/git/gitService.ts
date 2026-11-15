@@ -1204,8 +1204,22 @@ export class GitService {
 		return [...trackedFiles, ...untrackedFiles.map(f => ({ ...f, sourceRef: untrackedRef }))];
 	}
 
+	/** `git add` for one file or folder. A folder's untracked repositories are left out (see
+	 * NestedRepoInfo for why), and one of those on its own is refused. */
 	async stageFile(relPath: string): Promise<void> {
-		await this.git.raw(['add', '--', relPath]);
+		const isFolder = await fs.promises.stat(path.join(this.repoRoot, relPath)).then(
+			s => s.isDirectory(),
+			() => false
+		);
+		// Only a folder can hold one, and a file's checkbox shouldn't cost an extra git call.
+		const nested = isFolder ? await this.getUntrackedNestedRepos(relPath) : [];
+		const target = relPath.replace(/\/+$/, '');
+		if (nested.includes(target)) {
+			throw new Error(
+				`${target} is a separate git repository, so GGit won't stage it: git would record it as a bare commit that clones of this repository can't fetch. Right-click it to add it as a submodule, or to ignore it.`
+			);
+		}
+		await this.git.raw(['add', '--', relPath, ...nested.map(excludePathspec)]);
 	}
 
 	async unstageFile(relPath: string): Promise<void> {
@@ -1291,8 +1305,86 @@ export class GitService {
 		}
 	}
 
+	/** `git add -A`, minus the untracked repositories inside this one. Plain `git add -A` would record
+	 * each as a bare commit with no .gitmodules entry (git only prints a warning), which is how a
+	 * superproject ends up with submodules nobody can clone. */
 	async stageAll(): Promise<void> {
-		await this.git.raw(['add', '-A']);
+		const nested = await this.getUntrackedNestedRepos();
+		await this.git.raw(['add', '-A', ...(nested.length > 0 ? ['--', ':/', ...nested.map(excludePathspec)] : [])]);
+	}
+
+	/** The repositories inside this one that it doesn't track, relative to its root: each one git would
+	 * embed on a `git add`, at any depth, including inside untracked folders (git reports the folder
+	 * itself, with a trailing slash, and never what's in it). `within` narrows it to one path. */
+	async getUntrackedNestedRepos(within?: string): Promise<string[]> {
+		const pathspec = within === undefined ? ':/' : `:(literal)${within}`;
+		const out = await this.git.raw(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', pathspec]);
+		return out
+			.split('\0')
+			.filter(p => p.endsWith('/'))
+			.map(p => p.slice(0, -1));
+	}
+
+	/** Repositories inside this one that .gitignore covers. Ignored folders are listed without what's in
+	 * them, so a repository deep inside node_modules, say, doesn't count: only one that an ignore rule
+	 * names, or sits directly in a folder that's otherwise tracked. */
+	async getIgnoredNestedRepos(): Promise<string[]> {
+		const out = await this.git.raw(['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory', '--full-name', '--', ':/']);
+		const folders = out
+			.split('\0')
+			.filter(p => p.endsWith('/'))
+			.map(p => p.slice(0, -1));
+		const found = await Promise.all(folders.map(async rel => ((await hasDotGit(path.join(this.repoRoot, rel))) ? rel : undefined)));
+		return found.filter((rel): rel is string => rel !== undefined);
+	}
+
+	/** The paths .gitmodules lists (what tells a clone where to fetch each submodule), relative to the
+	 * repository root. Empty when there's no .gitmodules. */
+	async getRegisteredSubmodulePaths(): Promise<Set<string>> {
+		try {
+			// -z: a submodule's name can contain spaces, so `key value` lines can't be split reliably.
+			const out = await this.git.raw([
+				'config',
+				'-z',
+				'--file',
+				path.join(this.repoRoot, '.gitmodules'),
+				'--get-regexp',
+				'^submodule\\..*\\.path$',
+			]);
+			return new Set(
+				out
+					.split('\0')
+					.map(record => record.slice(record.indexOf('\n') + 1))
+					.filter(p => p.length > 0)
+			);
+		} catch {
+			return new Set();
+		}
+	}
+
+	/** Makes an untracked repository inside this one a submodule. `git submodule add` adopts the
+	 * checkout that's already there (nothing is cloned or moved), lists it in .gitmodules with `url`,
+	 * and stages both. */
+	async addSubmodule(relPath: string, url: string): Promise<void> {
+		await this.git.raw(['submodule', 'add', '--', url, relPath]);
+	}
+
+	/** For a submodule the index already records but .gitmodules doesn't list (what a `git add` of a
+	 * nested repository leaves behind): adds its .gitmodules entry and stages that. `git submodule add`
+	 * refuses a path that's already in the index, so this writes the entry it would have. */
+	/** Whether the checked-out commit is on one of `remote`'s branches, as of the last fetch: what a
+	 * clone needs before it can check this repository out as a submodule. */
+	async isHeadOnRemote(remote: string): Promise<boolean> {
+		assertNotOptionLike(remote, 'remote name');
+		const out = await this.git.raw(['branch', '-r', '--contains', 'HEAD', '--list', `${remote}/*`]);
+		return out.trim().length > 0;
+	}
+
+	async registerSubmodule(relPath: string, url: string): Promise<void> {
+		const file = path.join(this.repoRoot, '.gitmodules');
+		await this.git.raw(['config', '--file', file, `submodule.${relPath}.path`, relPath]);
+		await this.git.raw(['config', '--file', file, `submodule.${relPath}.url`, url]);
+		await this.git.raw(['add', '--', '.gitmodules']);
 	}
 
 	async unstageAll(): Promise<void> {
@@ -1373,33 +1465,68 @@ export class GitService {
 	 * operation for that tab to open on: a `git stash apply` that conflicts leaves no MERGE_HEAD or
 	 * similar behind, so these rows are the only place its conflicts show up at all. */
 	async getWorkingChanges(): Promise<WorkingChangeFile[]> {
-		const status = await this.git.status();
-		const conflicted = new Set(status.conflicted);
+		// Porcelain v2 rather than simple-git's status() (v1): v1 shows a submodule as a plain " M"
+		// whatever changed in it, while v2 says whether it's new commits, edits inside, or new files.
+		// Otherwise the same as status() asks for: every untracked file listed on its own (-uall).
+		const entries = parseStatusV2(await this.git.raw(['status', '--porcelain=v2', '-z', '--untracked-files=all']));
 		const changes: WorkingChangeFile[] = [];
-		for (const f of status.files) {
-			if (conflicted.has(f.path)) {
+		const submodules: WorkingChangeFile[] = [];
+		const untrackedFolders: WorkingChangeFile[] = [];
+		for (const f of entries) {
+			if (f.conflicted) {
 				changes.push({ path: f.path, status: 'U', state: 'unstaged' });
 				continue;
 			}
 			if (f.index === '?') {
 				// Untracked -- git reports both columns as '?'; nothing about it can be "staged" yet.
-				changes.push({ path: f.path, status: '?', state: 'unstaged' });
+				const change: WorkingChangeFile = { path: f.path, status: '?', state: 'unstaged' };
+				changes.push(change);
+				// With -uall, the only untracked path git ends with a slash is a repository inside this
+				// one: git never lists what's in those.
+				if (f.path.endsWith('/')) {
+					untrackedFolders.push(change);
+				}
 				continue;
 			}
+			// What changed in a submodule describes its checkout against the index, so it only belongs
+			// on the unstaged row.
 			if (f.index !== ' ') {
-				changes.push({ path: f.path, status: mapStatusCode(f.index), state: 'staged' });
+				const change: WorkingChangeFile = { path: f.path, status: mapStatusCode(f.index), state: 'staged' };
+				changes.push(change);
+				if (f.submodule) {
+					change.nested = { kind: 'submodule' };
+					submodules.push(change);
+				}
 			}
-			if (f.working_dir !== ' ') {
-				changes.push({ path: f.path, status: mapStatusCode(f.working_dir), state: 'unstaged' });
+			if (f.workingDir !== ' ') {
+				const change: WorkingChangeFile = { path: f.path, status: mapStatusCode(f.workingDir), state: 'unstaged' };
+				changes.push(change);
+				if (f.submodule) {
+					change.nested = { kind: 'submodule', ...f.submodule };
+					submodules.push(change);
+				}
 			}
-			if (f.index !== ' ' && f.index !== '?' && f.working_dir !== ' ') {
-				this.logger?.(
-					`getWorkingChanges: "${f.path}" is split -- index="${f.index}" working_dir="${f.working_dir}"`
-				);
+			if (f.index !== ' ' && f.workingDir !== ' ') {
+				this.logger?.(`getWorkingChanges: "${f.path}" is split -- index="${f.index}" working_dir="${f.workingDir}"`);
 			}
 		}
+		await Promise.all([
+			// Which submodules .gitmodules lists: what tells a clone where to fetch each one.
+			submodules.length > 0 &&
+				this.getRegisteredSubmodulePaths().then(registered => {
+					for (const change of submodules) {
+						change.nested = { ...change.nested!, registered: registered.has(change.path) };
+					}
+				}),
+			...untrackedFolders.map(async change => {
+				if (await hasDotGit(path.join(this.repoRoot, change.path))) {
+					change.path = change.path.replace(/\/+$/, '');
+					change.nested = { kind: 'untracked' };
+				}
+			}),
+		]);
 		this.logger?.(
-			`getWorkingChanges: ${status.files.length} raw entr${status.files.length === 1 ? 'y' : 'ies'} -> ${changes.length} row(s): ` +
+			`getWorkingChanges: ${entries.length} raw entr${entries.length === 1 ? 'y' : 'ies'} -> ${changes.length} row(s): ` +
 				JSON.stringify(changes)
 		);
 		return changes;
@@ -1882,6 +2009,74 @@ function extractHunkPatch(diffText: string, startLine: number, endLine: number):
 		h.rangeEnd < startLine ? startLine - h.rangeEnd : h.newStart - endLine;
 	const nearest = hunks.reduce((best, h) => (distance(h) < distance(best) ? h : best));
 	return header + nearest.block;
+}
+
+/** Whether a folder holds a repository: a .git directory, or the .git file a submodule or linked
+ * worktree has instead. False for a file, whose "<file>/.git" can't exist. */
+async function hasDotGit(folder: string): Promise<boolean> {
+	return fs.promises.access(path.join(folder, '.git')).then(
+		() => true,
+		() => false
+	);
+}
+
+/** A pathspec leaving one path (and everything under it) out of a `git add`. `top`: relative to the
+ * repository root, as status and ls-files --full-name report paths, whatever folder git runs in.
+ * `literal`: a name with `*` or `[` in it means just that name. */
+function excludePathspec(relPath: string): string {
+	return `:(top,exclude,literal)${relPath}`;
+}
+
+/** One path from `git status --porcelain=v2`, in the shape simple-git's status().files uses: the
+ * index and working-tree codes, with ' ' for unchanged, and '?' in both for an untracked path. */
+interface StatusEntry {
+	path: string;
+	index: string;
+	workingDir: string;
+	/** An unmerged path: what simple-git's status().conflicted lists (AA, AU, DD, DU, UA, UD, UU). */
+	conflicted: boolean;
+	/** Set for a submodule: what's changed in its checkout, against the commit the index records. */
+	submodule?: { newCommits: boolean; modified: boolean; untracked: boolean };
+}
+
+/** Where the path starts, by record type, in `git status --porcelain=v2` output: after 8 fields for
+ * an ordinary change, 9 for a rename or copy (which adds its similarity score), 10 for a conflict. */
+const V2_PATH_FIELD: Record<string, number> = { '1': 8, '2': 9, u: 10 };
+
+/** Parses `git status --porcelain=v2 -z`. Each record starts with its type: 1 (changed), 2 (renamed
+ * or copied, followed by a record holding the original path), u (unmerged), ? (untracked), ! (ignored,
+ * skipped), # (headers, skipped). The second field is the two status codes, '.' for unchanged. The
+ * third is "N..." for an ordinary path, or "S<c><m><u>" for a submodule: C when it's checked out at a
+ * different commit than the index records, M with uncommitted edits to files it tracks, U with
+ * untracked files. Paths can hold spaces, so a path is the rest of its record. */
+function parseStatusV2(out: string): StatusEntry[] {
+	const entries: StatusEntry[] = [];
+	const records = out.split('\0');
+	for (let i = 0; i < records.length; i++) {
+		const record = records[i];
+		if (record.startsWith('? ')) {
+			entries.push({ path: record.slice(2), index: '?', workingDir: '?', conflicted: false });
+			continue;
+		}
+		const fields = record.split(' ');
+		const pathField = V2_PATH_FIELD[fields[0]];
+		if (pathField === undefined) {
+			continue;
+		}
+		if (fields[0] === '2') {
+			i++;
+		}
+		const [x, y] = fields[1];
+		const sub = fields[2];
+		entries.push({
+			path: fields.slice(pathField).join(' '),
+			index: x === '.' ? ' ' : x,
+			workingDir: y === '.' ? ' ' : y,
+			conflicted: fields[0] === 'u',
+			submodule: sub.startsWith('S') ? { newCommits: sub[1] === 'C', modified: sub[2] === 'M', untracked: sub[3] === 'U' } : undefined,
+		});
+	}
+	return entries;
 }
 
 /** Maps a `git status --porcelain` code (index or working_dir column) to our FileStatus union. */

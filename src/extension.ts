@@ -13,6 +13,7 @@ import { MergePanel } from './merge/mergePanel';
 import { openDiffForWorkingChange } from './diff/openDiff';
 import { GGitShowContentProvider, GGIT_SHOW_SCHEME } from './diff/showContentProvider';
 import {
+	addAsSubmodule,
 	addPathsToGitignore,
 	applyStashReportingConflicts,
 	applyStashWithPicker,
@@ -997,6 +998,43 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 
+		// A repository row in Working Copy (see NestedRepoInfo): clicking it switches to that repository.
+		// One the Repository list doesn't have (a submodule of a submodule, say) opens in a new window
+		// instead, after a rescan in case it's just appeared.
+		vscode.commands.registerCommand('ggit.openNestedRepository', async (node: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(node) || !node.nested) {
+				return;
+			}
+			const root = path.join(repos.current.repoRoot, ...node.path.split('/'));
+			if (!repos.serviceForListed(root)) {
+				await rescanRepos();
+			}
+			if (repos.serviceForListed(root)) {
+				await switchRepository(root);
+				return;
+			}
+			const OPEN = 'Open in New Window';
+			const choice = await vscode.window.showInformationMessage(
+				`${node.path} isn't in the Repository list.`,
+				{
+					modal: true,
+					detail: "The list has the repositories directly inside the opened folder, plus the ones the folder's own repository holds.",
+				},
+				OPEN
+			);
+			if (choice === OPEN) {
+				await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(root), { forceNewWindow: true });
+			}
+		}),
+
+		vscode.commands.registerCommand('ggit.addAsSubmodule', (node: WorkingCopyNode) => {
+			if (!isWorkingChangeFile(node) || !node.nested) {
+				return;
+			}
+			const outer = repos.current;
+			return runGitOperation('Adding submodule…', () => addAsSubmodule(outer, node), refreshAll);
+		}),
+
 		vscode.commands.registerCommand(
 			'ggit.discardChanges',
 			(file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
@@ -1018,12 +1056,13 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand(
 			'ggit.ignoreThisItem',
 			async (file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
-				const files = resolveWorkingChangeSelection(file, selectedFiles);
+				const files = resolveWorkingChangeSelection(file, selectedFiles, { untrackedRepos: true });
 				if (files.length === 0) {
 					return;
 				}
 				try {
-					await addPathsToGitignore(gitService, files.map(f => f.path));
+					// The trailing slash on a repository's folder: a rule for that folder, never a file.
+					await addPathsToGitignore(gitService, files.map(f => (f.nested ? `${f.path}/` : f.path)));
 					refreshAll();
 				} catch (err) {
 					vscode.window.showErrorMessage(`GGit: ${(err as Error).message}`);
@@ -1034,7 +1073,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand(
 			'ggit.ignoreByName',
 			async (file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]) => {
-				const files = resolveWorkingChangeSelection(file, selectedFiles);
+				const files = resolveWorkingChangeSelection(file, selectedFiles, { untrackedRepos: true });
 				if (files.length === 0) {
 					return;
 				}
@@ -1525,13 +1564,15 @@ export function activate(context: vscode.ExtensionContext): void {
 	};
 
 	// A repository cloned into or deleted from the folder, or the folder itself initialized or
-	// un-initialized: anything created or deleted at the top level, or a .git directly inside it.
-	// Deleting a whole folder can arrive as that folder's deletion alone, hence the top-level `*`.
-	// A rescan is one directory listing, so there's no need to be choosier.
+	// un-initialized: anything created or deleted at the top level, or a .git anywhere (a nested
+	// repository deeper down, which the folder's repository will now report), or .gitmodules changing
+	// (a submodule added or removed). Deleting a whole folder can arrive as that folder's deletion
+	// alone, hence the top-level `*`. A rescan is a directory listing and three quick git calls, so
+	// there's no need to be choosier.
 	const repoListWatcher = vscode.workspace.createFileSystemWatcher(
-		new vscode.RelativePattern(workspaceFolder, '{*,*/.git}'),
+		new vscode.RelativePattern(workspaceFolder, '{*,**/.git}'),
 		false,
-		true,
+		false,
 		false
 	);
 	let rescanDebounce: ReturnType<typeof setTimeout> | undefined;
@@ -1541,6 +1582,12 @@ export function activate(context: vscode.ExtensionContext): void {
 	};
 	repoListWatcher.onDidCreate(scheduleRescan);
 	repoListWatcher.onDidDelete(scheduleRescan);
+	// Changes only matter for .gitmodules: a saved top-level file is otherwise just an edit.
+	repoListWatcher.onDidChange(uri => {
+		if (path.basename(uri.fsPath) === '.gitmodules' && path.dirname(uri.fsPath) === workspaceFolder.uri.fsPath) {
+			scheduleRescan();
+		}
+	});
 	context.subscriptions.push(repoListWatcher);
 
 	void repos
@@ -1558,9 +1605,18 @@ export function activate(context: vscode.ExtensionContext): void {
  * already keeps the menu off any selection that includes Create Commit (VS Code applies `when`
  * clauses to every selected row), and Select All leaves it out (see ggit.workingCopySelectAll) --
  * dropping it here is just a backstop. */
-function resolveWorkingChangeSelection(file: WorkingCopyNode, selectedFiles?: WorkingCopyNode[]): WorkingChangeFile[] {
+function resolveWorkingChangeSelection(
+	file: WorkingCopyNode,
+	selectedFiles?: WorkingCopyNode[],
+	options: { untrackedRepos?: boolean } = {}
+): WorkingChangeFile[] {
 	const nodes = selectedFiles && selectedFiles.length > 0 ? selectedFiles : [file];
-	return [...new Set(nodes.flatMap(collectWorkingChangeFiles))];
+	// A repository inside this one isn't a file: git skips it when stashing, and discarding it would
+	// only reset what the index records for it, never its own files. So it's left out, unless the
+	// command is an ignore, which an untracked one can use.
+	return [...new Set(nodes.flatMap(collectWorkingChangeFiles))].filter(
+		f => !f.nested || (options.untrackedRepos === true && f.nested.kind === 'untracked')
+	);
 }
 
 /** For the single-target commands (Copy Path, Reveal): the right-clicked file itself, or -- should the

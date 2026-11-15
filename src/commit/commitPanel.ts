@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { confirmStagingConflicts } from '../git/gitActions';
 import { describeHookFailure, isCommitBlockedByHook, parseHookFailure, stripAnsi } from '../git/gitErrors';
 import { GitService } from '../git/gitService';
+import { isStageable } from '../git/types';
 import { showHookFailure } from '../operationRunner';
 import { CommitHostMessage, CommitWebviewMessage } from './commitProtocol';
 
@@ -83,8 +84,10 @@ export class CommitPanel {
 		this.panel.title = branch ? `Commit: ${branch}` : 'Commit';
 		// Both staged and unstaged rows — like Working Copy, one flat list sorted by path, with the
 		// checkbox as the only staged/unstaged signal — so a file can be staged or unstaged from here
-		// without switching views, not just committed.
+		// without switching views, not just committed. A repository inside this one that can't be staged
+		// (see isStageable) can't change what's committed, so it's left to Working Copy, which explains it.
 		const files = changes
+			.filter(isStageable)
 			.map(f => ({ path: f.path, status: f.status, staged: f.state === 'staged' }))
 			.sort((a, b) => a.path.localeCompare(b.path));
 		this.post({

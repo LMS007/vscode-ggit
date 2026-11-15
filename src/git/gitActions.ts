@@ -961,6 +961,58 @@ export async function stashPathsWithMessage(gitService: GitService, paths: strin
 	await gitService.stashPaths(paths, message.trim() || undefined);
 }
 
+/** Working Copy's Add as Submodule… on a repository inside this one (see NestedRepoInfo). An
+ * untracked one becomes a submodule; a submodule that .gitmodules doesn't list gets listed. Either
+ * way, what .gitmodules records is where a clone fetches it from: one of its own remotes. Everything
+ * is staged, not committed. */
+export async function addAsSubmodule(outer: GitService, file: WorkingChangeFile): Promise<void> {
+	if (!file.nested) {
+		return;
+	}
+	const name = file.path;
+	const inner = new GitService(path.join(outer.repoRoot, ...name.split('/')));
+	const remotes = await inner.listRemotes();
+	if (remotes.length === 0) {
+		void vscode.window.showWarningMessage(
+			`GGit: ${name} has no remote, so a clone wouldn't know where to fetch it from. Publish it first: switch to ${name} and add a remote in Remotes.`
+		);
+		return;
+	}
+	let remote = remotes.includes('origin') ? 'origin' : remotes[0];
+	if (remotes.length > 1) {
+		const items = await Promise.all(
+			[remote, ...remotes.filter(r => r !== remote)].map(async r => ({ label: r, description: await inner.getRemoteUrl(r).catch(() => '') }))
+		);
+		const pick = await vscode.window.showQuickPick(items, { title: `Where should clones fetch ${name} from?` });
+		if (!pick) {
+			return;
+		}
+		remote = pick.label;
+	}
+	const url = await inner.getRemoteUrl(remote);
+	if (!url) {
+		void vscode.window.showWarningMessage(`GGit: ${name}'s remote "${remote}" has no URL.`);
+		return;
+	}
+	const pushed = await inner.isHeadOnRemote(remote).catch(() => true);
+	const staged = file.nested.kind === 'untracked' ? `.gitmodules and ${name}` : '.gitmodules';
+	const detail = [
+		`.gitmodules will tell clones to fetch it from ${url}. GGit stages ${staged}; commit to finish. Nothing inside ${name} changes.`,
+		pushed ? '' : `Its checked-out commit isn't on ${remote} yet. Push it before you push this repository, or clones won't be able to check it out.`,
+	]
+		.filter(Boolean)
+		.join('\n\n');
+	const ADD = 'Add as Submodule';
+	if ((await vscode.window.showInformationMessage(`Add ${name} as a submodule?`, { modal: true, detail }, ADD)) !== ADD) {
+		return;
+	}
+	if (file.nested.kind === 'untracked') {
+		await outer.addSubmodule(name, url);
+	} else {
+		await outer.registerSubmodule(name, url);
+	}
+}
+
 /** Resolves the file + 1-indexed line range GGit's own hunk stage/unstage commands should act on,
  * from whatever's currently focused. Uses the full selection (`start`/`end`, always in document
  * order regardless of which direction it was dragged) rather than just the cursor's resting point --

@@ -2,7 +2,7 @@
   "name": "vscode-ggit",
   "displayName": "GGit",
   "description": "A minimal, Tower-style git branch/history viewer for VS Code",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "kylekeating",
   "repository": {
     "type": "git",
@@ -335,6 +335,15 @@
         "title": "Discard Local Changes"
       },
       {
+        "command": "ggit.openNestedRepository",
+        "title": "Switch to This Repository",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "ggit.addAsSubmodule",
+        "title": "Add as Submodule…"
+      },
+      {
         "command": "ggit.createBranchFrom",
         "title": "Create New Branch from Here"
       },
@@ -537,28 +546,43 @@
       ],
       "view/item/context": [
         {
+          "command": "ggit.openNestedRepository",
+          "when": "view == ggitWorkingCopy && viewItem =~ /^workingChange(NestedRepo|Submodule)/",
+          "group": "0_repo@1"
+        },
+        {
+          "command": "ggit.openNestedRepository",
+          "when": "view == ggitWorkingCopy && viewItem =~ /^workingChange(NestedRepo|Submodule)/",
+          "group": "inline"
+        },
+        {
+          "command": "ggit.addAsSubmodule",
+          "when": "view == ggitWorkingCopy && viewItem =~ /^workingChange(NestedRepo|SubmoduleUnregistered)$/",
+          "group": "0_repo@2"
+        },
+        {
           "command": "ggit.showFileHistory",
-          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && viewItem != 'createCommitAction' && viewItem != 'workingChangeNestedRepo' && viewItem != 'workingChangeSubmodule' && viewItem != 'workingChangeSubmoduleUnregistered'",
           "group": "0_history@1"
         },
         {
           "command": "ggit.stashSelectedFiles",
-          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeConflicted' && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeConflicted' && viewItem != 'createCommitAction' && viewItem != 'workingChangeNestedRepo' && viewItem != 'workingChangeSubmodule' && viewItem != 'workingChangeSubmoduleUnregistered'",
           "group": "1_modification"
         },
         {
           "command": "ggit.openWorkingChangeFile",
-          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && viewItem != 'createCommitAction' && viewItem != 'workingChangeNestedRepo' && viewItem != 'workingChangeSubmodule' && viewItem != 'workingChangeSubmoduleUnregistered'",
           "group": "inline"
         },
         {
           "command": "ggit.discardChanges",
-          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy && viewItem != 'createCommitAction' && viewItem != 'workingChangeNestedRepo' && viewItem != 'workingChangeSubmodule' && viewItem != 'workingChangeSubmoduleUnregistered'",
           "group": "2_discard"
         },
         {
           "submenu": "ggit.ignoreSubmenu",
-          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && viewItem != 'createCommitAction'",
+          "when": "view == ggitWorkingCopy && viewItem != 'workingChangeFolder' && viewItem != 'createCommitAction' && viewItem != 'workingChangeSubmodule' && viewItem != 'workingChangeSubmoduleUnregistered'",
           "group": "3_gitignore"
         },
         {
@@ -686,6 +710,14 @@
         {
           "command": "ggit.switchRepository",
           "when": "ggit.multiRepo"
+        },
+        {
+          "command": "ggit.openNestedRepository",
+          "when": "false"
+        },
+        {
+          "command": "ggit.addAsSubmodule",
+          "when": "false"
         },
         {
           "command": "ggit.deleteRemoteBranch",

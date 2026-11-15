@@ -40,9 +40,21 @@ nested deeper, it offers to open that folder instead). The first branch is `main
 it (a folder of checkouts, or a superproject and its submodules), a **Repository** dropdown at the
 top of the sidebar picks which one every view shows. The folder itself is listed too when it's a
 repository. Each option shows its branch and changed-file count, and the line below links the
-other repositories with changes. Only one level down is searched. Switching closes GGit's tabs for
-the previous repository (History reopens on the new one), and waits while a GGit operation is
-running. Also in the Command Palette as **GGit: Switch Repository…**.
+other repositories with changes. The search looks one level down, plus, when the folder is a
+repository, deeper ones it already knows about: its submodules, and repositories inside it that it
+doesn't track (ignored ones included). Switching closes GGit's tabs for the previous repository
+(History reopens on the new one), and waits while a GGit operation is running. Also in the Command
+Palette as **GGit: Switch Repository…**.
+
+**Repositories inside a repository**: git sees a repository inside another as one path, never the
+files in it, so Working Copy shows it as one row with a repo icon, saying what changed: **new
+commits** (checked out at a different commit than recorded), **changes inside** (uncommitted work
+there), or **not a submodule** (a repository this one doesn't track). Click it to switch to that
+repository. Only new commits has a checkbox, which records that commit; changes inside need
+committing in that repository first. An untracked repository is never staged, not by its row, its
+folder, or Create Commit, since git would record it as a bare commit that clones can't fetch.
+Right-click it for **Add as Submodule…** (using one of its remotes) or Ignore. A submodule missing
+from `.gitmodules` is flagged, with Add as Submodule… to list it.
 
 **Working Copy**
 - Checkbox stages/unstages. A partly staged file shows as two rows, `(staged)` and `(unstaged)`.
